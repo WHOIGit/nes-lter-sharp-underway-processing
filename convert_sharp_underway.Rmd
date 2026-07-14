@@ -218,16 +218,16 @@ avg_wind <- function(df, unit, prefix) {
 # <prefix>_true_speed_kt, and leaves the relative columns in place.
 #
 # The vector math is truew() from R/tw.R. cspd and wspd have to be in the same
-# units, and truew() does not convert: both are knots here (speed_kt from $INVTG,
+# units, and truew() does not convert: both are knots here (sog_kts from $INVTG,
 # and $WIMW reports knots), so true speed comes out in knots too. Do not hand it
-# speed_km. wdir has to be meteorological -- the direction the wind comes FROM --
+# sog_kmh. wdir has to be meteorological -- the direction the wind comes FROM --
 # which is what $WIMW already reports, so it goes in as-is.
 #
 # North comes back as 360, not 0, whenever the wind is blowing: that is truew()
 # honoring the WMO convention, and it is left alone.
 true_wind <- function(df, prefix, zlr_deg = zlr, wmis = DEFAULT_MISSING_VALUES) {
   crse <- df$course_true_deg
-  cspd <- df$speed_kt
+  cspd <- df$sog_kts
   hd   <- df$heading
   wdir <- df[[paste0(prefix, "_rel_dir_deg")]]
   wspd <- df[[paste0(prefix, "_speed_kt")]]
@@ -598,7 +598,7 @@ qc(ggplot(underway_v, aes(x = datetime, y = heading))+geom_point()+geom_point(da
 # both, and publishing course is what lets a downstream user reproduce it.
 
 underway_v <- underway_v |>
-  rename(course_true_deg = courseTrue, speed_kt = speedKt, speed_km = speedKm) |>
+  rename(course_true_deg = courseTrue, sog_kts = speedKt, sog_kmh = speedKm) |>
   relocate(date, datetimeISO, .before = dec_lat) |>
   mutate(across(where(is.numeric), zap_neg_zero))
 
@@ -732,7 +732,7 @@ underway_m <- underway_m |>
 # collapse to the relative wind simply rotated onto true north. That is the one
 # case with a closed-form answer, so check it against one: this should be 0.
 underway_m |>
-  filter(speed_kt == 0, heading_type) |>
+  filter(sog_kts == 0, heading_type) |>
   mutate(
     dir_err = abs(((wind1_true_dir_deg - (heading + wind1_rel_dir_deg + zlr)) %% 360 + 180) %% 360 - 180),
     spd_err = abs(wind1_true_speed_kt - wind1_speed_kt)

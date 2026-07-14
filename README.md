@@ -211,7 +211,7 @@ agrees to within floating-point noise (worst disagreement 3 × 10⁻¹³ degrees
 
 Four inputs go in, all of them already in the product: `heading` (where the bow
 points, true north), `course_true_deg` (where the ship actually travels over the
-ground), `speed_kt` (over the ground), and the sensor's relative wind. Because all
+ground), `sog_kts` (speed over the ground), and the sensor's relative wind. Because all
 four are published, a downstream user can reproduce or redo this correction from
 the CSV alone — which is why `course_true_deg` is published even though it tracks
 `heading` closely. The two are not the same variable, and the difference between
