@@ -1,0 +1,646 @@
+---
+title: "convert_raw_underway"
+output: html_document
+---
+
+# load required packages
+
+```{r}
+
+Sys.setenv(TZ='GMT')
+
+library(here)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(lubridate)
+library(readr)
+library(tidyr)
+library(stringr)
+
+```
+
+# helpers
+
+```{r}
+
+# Cruise the raw logs belong to; prefixes every file written to output/, and
+# selects the event log. It does NOT select the raw logs -- SHARP_RAW_ROOT does
+# that -- so the two are cross-checked below. Set SHARP_CRUISE in the
+# environment, or edit this line.
+cruise <- tolower(Sys.getenv("SHARP_CRUISE", unset = "hrs2606"))
+
+# Every plot in this notebook is QC, not a product: nothing written to output/
+# depends on one. They are the bulk of the runtime (they roughly quadruple it),
+# so they are off unless asked for -- set SHARP_PLOTS=1 in the environment, or
+# edit this line, to get the QC report back.
+make_plots <- identical(Sys.getenv("SHARP_PLOTS", unset = "0"), "1")
+
+# Wrap every QC plot in qc(). The argument is a lazy promise, so when plotting is
+# off the plot is never built at all. ggplot objects have to be printed to draw;
+# base graphics (hist) draw as a side effect of being forced, so print only the
+# ggplots and hand the rest back invisibly.
+qc <- function(expr) {
+  if (!make_plots) return(invisible(NULL))
+  x <- expr
+  if (inherits(x, "ggplot")) print(x)
+  invisible(x)
+}
+
+# Root of the raw instrument logs, one subdirectory per instrument. The raw logs
+# are too large to keep in the project, so they live outside it: point
+# SHARP_RAW_ROOT at wherever they are unpacked, or drop them in input/sharp_raw.
+raw_root <- Sys.getenv("SHARP_RAW_ROOT", unset = here("input/raw"))
+
+if (!dir.exists(raw_root)) {
+  stop("raw log directory not found: ", raw_root,
+       "\nUnpack the raw logs there, or set SHARP_RAW_ROOT to their location.")
+}
+
+# `cruise` only labels the output; nothing about it points at the raw logs. Get
+# the two out of step -- process one cruise's logs while `cruise` still names the
+# last one -- and every file lands mislabelled, with nothing to say so. The raw
+# filenames carry the cruise number (HS2606EM_gps01-2026-07-09), so check it.
+cruise_num  <- str_extract(cruise, "\\d+")
+raw_files   <- basename(dir(raw_root, recursive = TRUE))
+matches     <- str_detect(raw_files, stringr::fixed(cruise_num))
+
+if (length(raw_files) == 0) {
+  stop("no raw log files found under: ", raw_root)
+}
+if (!any(matches)) {
+  stop("cruise/raw-log mismatch: cruise is \"", cruise, "\", but none of the ",
+       length(raw_files), " raw filenames under ", raw_root, " mention ",
+       cruise_num, " (e.g. ", raw_files[1], ").",
+       "\nSet SHARP_CRUISE to the cruise these logs belong to, or point ",
+       "SHARP_RAW_ROOT at the logs for ", cruise, ".")
+}
+if (!all(matches)) {
+  warning(sum(!matches), " of ", length(raw_files), " raw filenames do not ",
+          "mention ", cruise_num, " -- logs from more than one cruise may be ",
+          "mixed together under ", raw_root, ". First: ",
+          raw_files[!matches][1])
+}
+
+# Products are written here; keep them out of the raw tree.
+out_dir <- here("output")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Every product is named <cruise>_<what>.csv.
+product <- function(what) file.path(out_dir, paste0(cruise, "_", what, ".csv"))
+
+# Only <cruise>_underway_noPAR.csv is the product. The other nine files are
+# intermediates: the partially-joined underway tables, the full-rate $PASHR and
+# $INVTG dumps, and the standalone 1-minute per-instrument files. They are useful
+# for QC and for reproducing the products that predate the met work, but they are
+# not what gets published, so they are not written unless asked for --
+# set SHARP_INTERMEDIATES=1 in the environment, or edit this line.
+write_intermediates <- identical(Sys.getenv("SHARP_INTERMEDIATES", unset = "0"), "1")
+
+# Use for every file that is not the final product. Returns its input invisibly,
+# so it can sit in a pipeline without breaking it.
+write_intermediate <- function(df, what) {
+  if (write_intermediates) write_csv(df, product(what))
+  invisible(df)
+}
+
+# Raw instrument files are NMEA-style: each line is a timestamped sentence with
+# comma- or tab-separated fields. Field count varies by sentence type, so the
+# files cannot be handed to read_csv() directly -- split a character vector of
+# already-filtered lines into a fixed number of columns instead.
+split_fields <- function(lines, field_names, delim = ",") {
+  m <- str_split_fixed(lines, stringr::fixed(delim), length(field_names))
+  df <- as_tibble(m, .name_repair = "minimal")
+  colnames(df) <- field_names
+  df
+}
+
+read_all_lines <- function(instrument) {
+  paths <- dir(file.path(raw_root, instrument, "raw"), full.names = TRUE)
+  unlist(lapply(paths, read_lines), use.names = FALSE)
+}
+
+# The leading field of every sentence is "<ISO8601 timestamp> $XXYYY"; the
+# timestamp occupies the first 27 characters.
+iso_from_field <- function(x) str_sub(x, 1, 27)
+
+parse_iso <- function(x) as.POSIXct(x, tz = "GMT", format = "%Y-%m-%dT%H:%M:%S")
+
+# NMEA degrees-minutes: DDMM.MMMM (lat) or DDDMM.MMMM (lon), no separator,
+# with the hemisphere in a following field.
+dm_to_decimal <- function(x, hemi, deg_digits) {
+  deg <- as.numeric(str_sub(x, 1, deg_digits))
+  min <- as.numeric(str_sub(x, -7))
+  (deg + min / 60) * if_else(hemi %in% c("S", "W"), -1, 1)
+}
+
+# The published files timestamp every row as UTC with an explicit offset.
+iso_offset <- function(x) paste0(format(x, "%Y-%m-%d %H:%M:%S"), "+00:00")
+
+# Subsample an instrument onto a 1-minute grid by taking the first sample in
+# each minute. Where a sample lands in the boundary second this is identical to
+# the old filter(second(datetime) == 0); where instrument clock drift means no
+# sample landed there, it fills the minute instead of dropping it -- which is
+# what the hand-built *_seconds_corr.csv patches used to do.
+# tol_sec caps how stale a filled value may be; minutes whose first sample is
+# further out than that are dropped rather than carried.
+snap_to_minute <- function(df, tol_sec = 30) {
+  df |>
+    mutate(minute = floor_date(datetime, "minute")) |>
+    group_by(minute) |>
+    slice_min(datetime, n = 1, with_ties = FALSE) |>
+    ungroup() |>
+    filter(as.numeric(difftime(datetime, minute, units = "secs")) <= tol_sec)
+}
+
+# The raw NMEA fields carry signed zeros ("-0.00"), which R keeps as -0 and
+# write_csv renders as "-0". Collapse them onto positive zero.
+zap_neg_zero <- function(x) if_else(x == 0, 0, x)
+
+# NMEA checksum: XOR of every character between the "$" and the "*", compared
+# against the two hex digits after the "*". A serial dropout mid-sentence still
+# yields a parseable line with plausible-looking numbers in it, so the met
+# sentences below are checked before they are trusted. Sentences repeat heavily
+# at 1 Hz, so checksum only the distinct ones and look the rest up.
+nmea_ok <- function(lines) {
+  m     <- str_match(lines, "\\$([^*]*)\\*([0-9A-Fa-f]{2})\\s*$")
+  body  <- m[, 2]
+  given <- m[, 3]
+
+  ok   <- rep(FALSE, length(lines))  # unparseable => bad
+  have <- !is.na(body)
+  u    <- unique(body[have])
+  sums <- vapply(u, \(s) Reduce(bitwXor, as.integer(charToRaw(s))), integer(1))
+  ok[have] <- sprintf("%02X", sums[match(body[have], u)]) == toupper(given[have])
+  ok
+}
+
+# Wind direction is a bearing, so it cannot be averaged as a scalar: the mean of
+# 359 and 1 is 180, not 0. Resolve each sample into a vector, average those, and
+# take the bearing back out. Speed is reported as the scalar mean (the usual met
+# convention) rather than the length of the mean vector, which would be damped
+# by any veering within the averaging window.
+avg_wind <- function(df, unit, prefix) {
+  df |>
+    group_by(datetime = floor_date(datetime, unit = unit)) |>
+    summarize(
+      u        = mean(wind_speed * sin(wind_dir * pi / 180)),
+      v        = mean(wind_speed * cos(wind_dir * pi / 180)),
+      speed_kt = mean(wind_speed),
+      .groups  = "drop"
+    ) |>
+    mutate(rel_dir_deg = (atan2(u, v) * 180 / pi) %% 360) |>
+    select(datetime, rel_dir_deg, speed_kt) |>
+    rename_with(\(x) paste0(prefix, "_", x), c(rel_dir_deg, speed_kt))
+}
+
+```
+
+# GPS
+
+```{r}
+
+GGA_COLS <- c("datetime_type","GPSTime","Latitude","NorS","Longitude","EorW",
+              "FixQuality","NumSats","HDOP","AntennaHeight","UnitsAntennaHeight",
+              "GeoidHeight","UnitGeoidHeight","ow","CheckSum")
+
+gps01 <- read_all_lines("gps01") |>
+  str_subset("GGA,") |>
+  split_fields(GGA_COLS) |>
+  mutate(
+    datetimeISO = iso_from_field(datetime_type),
+    datetime    = parse_iso(datetimeISO),
+    FixQuality  = as.numeric(FixQuality),
+    dec_lat     = dm_to_decimal(Latitude, NorS, 2),
+    dec_lon     = dm_to_decimal(Longitude, EorW, 3)
+  )
+
+# check fix quality
+#  from Definitions.txt: "0=invalid, 1=GPS, 2=DGPS, 3=PPS, 4=RTK, 5=Float RTK"
+qc(hist(gps01$FixQuality))
+
+gps01 <- gps01 |> select(datetimeISO, datetime, dec_lat, dec_lon)
+
+qc(ggplot(gps01, aes(x = datetime, y = dec_lat))+geom_point())
+qc(ggplot(gps01, aes(x = datetime, y = dec_lon))+geom_point())
+
+# The event log is a cruise-level product, not raw instrument output; it is only
+# ever overlaid on the track plots, so it is not read at all when plotting is
+# off, and a missing one is not an error. Its full name carries a timestamp that
+# cannot be guessed (R2R_ELOG_HRS2606HS_FINAL_EVENTLOG_20260427_160219.csv), so
+# match on the stable part of the name inside the cruise's own input directory --
+# staging one cruise's event log for another is then not possible by accident.
+elog_dir  <- here("input", toupper(cruise))
+elog_path <- dir(elog_dir, pattern = "EVENTLOG.*\\.csv$", full.names = TRUE,
+                 ignore.case = TRUE)
+
+elog <- if (!make_plots) {
+  NULL
+} else if (length(elog_path) == 1) {
+  read_csv(elog_path, show_col_types = FALSE)
+} else if (length(elog_path) > 1) {
+  warning("more than one event log in ", elog_dir, " -- skipping elog overlays: ",
+          paste(basename(elog_path), collapse = ", "))
+  NULL
+} else {
+  message("no event log matching *EVENTLOG*.csv in ", elog_dir,
+          " -- skipping elog overlays")
+  NULL
+}
+
+if (!is.null(elog)) {
+  qc(ggplot(elog, aes(x = Longitude, y = Latitude))+geom_point())
+  qc(ggplot(gps01, aes(x = dec_lon, y = dec_lat))+geom_point()+geom_point(data = elog, aes(x = Longitude, y = Latitude), color = "blue3"))
+}
+
+```
+
+```{r}
+# reduce data set to 1-minute timestamps
+
+# Position is instantaneous, not averaged: take the first fix in each minute.
+# datetimeISO keeps the true sample time; datetime carries the grid boundary.
+# Logging starts mid-minute, so the opening grid minute is only partly covered
+# -- and the averaged channels joined onto it below would average a short
+# window. Start the spine at the first minute the instrument was already
+# running for.
+first_full_minute <- ceiling_date(min(gps01$datetime), "minute")
+
+gps01_1min <- gps01 |>
+  snap_to_minute() |>
+  mutate(datetime = minute) |>
+  filter(datetime >= first_full_minute) |>
+  select(datetimeISO, datetime, dec_lat, dec_lon)
+
+qc({
+  p <- ggplot(gps01_1min, aes(x = dec_lon, y = dec_lat))+geom_point()
+  if (!is.null(elog)) p <- p + geom_point(data = elog, aes(x = Longitude, y = Latitude), color = "blue3")
+  p
+})
+
+write_intermediate(gps01_1min, "gps_1minute")
+
+```
+
+# Fluorometer
+
+```{r}
+
+FLUOR_COLS <- c("datetime","time","ChlChannel","ChlCount","TurbChannel","TurbCount","Auxiliary")
+
+# Using FLNTU characterization sheet date March 6, 2026, S/N FLNTURT-090
+# chl
+## Scale factor 0.0121 ug/L/count
+## Dark counts = 50 counts
+## chl (ug/L) = scale factor x (output - dark counts)
+# turb
+## Scale factor = 0.0061 NTU/count # NTU = nephelometric turbidity unit
+## Dark counts = 50 counts
+## NTU = scale factor x (output - dark counts)
+
+fluor <- read_all_lines("flnturt") |>
+  split_fields(FLUOR_COLS, delim = "\t") |>
+  mutate(
+    datetimeISO = iso_from_field(datetime),
+    datetime    = parse_iso(datetimeISO),
+    ChlCount    = as.numeric(ChlCount),
+    TurbCount   = as.numeric(TurbCount),
+    chl_ugl     = 0.0121 * (ChlCount - 50),
+    turb_ntu    = 0.0061 * (TurbCount - 50)
+  ) |>
+  select(-time) |>
+  relocate(datetimeISO, .before = datetime)
+
+qc(ggplot(fluor, aes(x = datetime, y = chl_ugl))+geom_point())
+qc(ggplot(fluor, aes(x = datetime, y = turb_ntu))+geom_point())
+
+# calculate 1-minute average of chlorophyll and turbidity
+fluor_avg <- fluor |>
+  group_by(datetime = floor_date(datetime, unit = "minutes")) |>
+  summarize(across(c(chl_ugl, turb_ntu), mean), .groups = "drop")
+
+# match 1-minute average to 1-minute instantaneous coordinates
+underway <- left_join(gps01_1min, fluor_avg, by = "datetime")
+
+# plot averaged timeseries
+qc(ggplot(underway, aes(x = datetime, y = chl_ugl))+geom_point())
+qc(ggplot(underway, aes(x = datetime, y = turb_ntu))+geom_point())
+
+```
+
+# Thermosalinograph
+
+```{r}
+
+TSG_COLS <- c("datetime","cond","sal")
+
+tsg <- read_all_lines("sbe4501") |>
+  split_fields(TSG_COLS) |>
+  mutate(
+    # the temperature is appended to the leading timestamp field
+    temp        = as.numeric(str_sub(datetime, -7)),
+    datetimeISO = iso_from_field(datetime),
+    datetime    = parse_iso(datetimeISO),
+    cond        = as.numeric(cond),
+    sal         = as.numeric(sal)
+  )
+
+# calculate 1-minute average of temperature, conductivity, salinity
+tsg_avg <- tsg |>
+  group_by(datetime = floor_date(datetime, unit = "minutes")) |>
+  summarize(across(c(temp, cond, sal), mean), .groups = "drop")
+
+# match 1-minute average to 1-minute instantaneous coordinates
+underway <- left_join(underway, tsg_avg, by = "datetime")
+
+# plot raw data
+qc(ggplot(tsg, aes(x = datetime, y = temp))+geom_point())
+qc(ggplot(tsg, aes(x = datetime, y = cond))+geom_point())
+qc(ggplot(tsg, aes(x = datetime, y = sal))+geom_point())
+
+# plot averaged timeseries
+qc(ggplot(underway, aes(x = datetime, y = temp))+geom_point())
+qc(ggplot(underway, aes(x = datetime, y = cond))+geom_point())
+qc(ggplot(underway, aes(x = datetime, y = sal))+geom_point())
+
+```
+
+```{r}
+
+# format and write file
+
+underway <- underway |>
+  mutate(date = iso_offset(datetime)) |>
+  rename(water_temperature_degree_c = temp,
+         conductivity_sm = cond,
+         salinity_psu = sal)
+
+write_intermediate(underway, "ISO_underway_noMet_noPAR_noPOS")
+
+write_intermediate(
+  underway |> select(-datetimeISO, -datetime) |> relocate(date, .before = dec_lat),
+  "underway_noMet_noPAR_noPOS"
+)
+
+```
+
+# POS data
+
+```{r}
+# here's a package that could be useful
+# install.packages("devtools")
+#devtools::install_github("paleolimbot/nmea")
+
+```
+
+```{r}
+
+# Read the POS files once and pull out both sentence types of interest.
+
+pos_lines <- read_all_lines("pos")
+
+PASH_COLS <- c("datetime_type","time","heading","heading_type","roll_deg","pitch_deg",
+               "heave_m","RollAccuacy","PitchAccuracy","HeadingAccuracy","IMUStatus","CheckSum")
+
+VTG_COLS <- c("datetime_type","courseTrue","courseTypeT","courseMag","courseTypeM",
+              "speedKt","speedTypeNaut","speedKm","speedTypeKM","CheckSum")
+
+pash <- pos_lines |> str_subset(".PASHR,.") |> split_fields(PASH_COLS)
+vtg  <- pos_lines |> str_subset(".INVTG,.") |> split_fields(VTG_COLS)
+
+unique(pash$IMUStatus) # "2" "0" "1"
+
+write_intermediate(pash, "pash")
+write_intermediate(vtg, "vtg")
+
+```
+
+```{r}
+# format pash
+
+pash <- pash |>
+  mutate(
+    type        = str_sub(datetime_type, -7),
+    datetimeISO = iso_from_field(datetime_type),
+    datetime    = parse_iso(datetimeISO),
+    # PASHR reports heading relative to true north; the published column is a flag
+    heading_type = heading_type == "T"
+  ) |>
+  mutate(across(c(heading, roll_deg, pitch_deg, heave_m, IMUStatus),
+                \(x) zap_neg_zero(as.numeric(x)))) |>
+  select(-datetime_type, -time, -CheckSum) |>
+  relocate(datetimeISO, datetime, .before = heading)
+
+# decided not to use averaging
+
+pash_1min <- pash |> snap_to_minute() |> mutate(datetime = minute)
+
+unique(pash_1min$IMUStatus) #2
+
+pash_1min <- pash_1min |> select(datetime, heading, heading_type, roll_deg, pitch_deg, heave_m)
+
+```
+
+```{r}
+# join with other 1-min data
+
+# The published datetimeISO identifies the $INVTG sample, so it is picked up
+# from the vtg join below rather than carried over from the GPS fix.
+underway_p <- underway |>
+  select(-datetimeISO) |>
+  left_join(pash_1min, by = "datetime") |>
+  relocate(date, .before = dec_lat)
+
+write_intermediate(underway_p, "underway_noMet_noPAR_pash")
+
+```
+
+```{r}
+
+# format vtg
+
+vtg <- vtg |>
+  mutate(
+    type        = str_sub(datetime_type, -7),
+    datetimeISO = iso_from_field(datetime_type),
+    datetime    = parse_iso(datetimeISO)
+  ) |>
+  mutate(across(c(courseTrue, courseMag, speedKt, speedKm), as.numeric))
+
+# decided not to use averaging
+
+qc(ggplot(vtg, aes(x = datetime, y = courseTrue))+geom_point()+geom_point(data = vtg, aes(x = datetime, y = courseMag), color = "blue3"))
+
+qc(ggplot(vtg, aes(x = datetime, y = speedKt))+geom_point())
+qc(ggplot(vtg, aes(x = datetime, y = speedKm))+geom_point())
+
+vtg_1min <- vtg |>
+  snap_to_minute() |>
+  mutate(datetime = minute) |>
+  select(datetimeISO, datetime, courseTrue, speedKt, speedKm)
+
+write_intermediate(vtg_1min, "vtg_1min")
+
+qc(ggplot(vtg, aes(x = datetime, y = courseTrue))+geom_point()+geom_point(data = vtg_1min, aes(x = datetime, y = courseTrue), color = "blue3"))
+
+qc(ggplot(vtg, aes(x = datetime, y = speedKt))+geom_point()+geom_point(data = vtg_1min, aes(x = datetime, y = speedKt), color = "blue3"))
+
+qc(ggplot(vtg, aes(x = datetime, y = speedKm))+geom_point()+geom_point(data = vtg_1min, aes(x = datetime, y = speedKm), color = "blue3"))
+
+```
+
+```{r}
+
+# join with other 1-min data
+
+# snap_to_minute() emits one row per minute boundary, so the hand-built
+# hrs2601_{pash,vtg}_seconds_corr.csv patches are no longer needed. These
+# should both be 0.
+sum(duplicated(vtg_1min$datetime))
+sum(duplicated(underway_p$datetime))
+
+underway_p <- underway_p |>
+  filter(!is.na(heading)) |>
+  arrange(datetime)
+
+underway_v <- left_join(underway_p, vtg_1min, by = "datetime")
+sum(duplicated(underway_v$datetime))
+
+# check for minutes present in the position spine but missing a speed
+underway_v_check <- filter(underway_v, is.na(speedKt))
+nrow(underway_v_check)
+
+# compare heading variables, heading true from pash lines and course true from vtg lines
+qc(ggplot(underway_v, aes(x = datetime, y = heading))+geom_point()+geom_point(data = underway_v, aes(x = datetime, y = courseTrue), color = "blue3"))
+# almost identical, don't think we need both
+
+underway_v <- underway_v |>
+  select(-courseTrue) |>
+  rename(speed_kt = speedKt, speed_km = speedKm) |>
+  relocate(date, datetimeISO, .before = dec_lat) |>
+  mutate(across(where(is.numeric), zap_neg_zero))
+
+# `date` carries the grid minute in the published files; `datetime` is the join
+# key the met section below still needs, so it is dropped on the way out only.
+write_intermediate(underway_v |> select(-datetime), "underway_noMet_noPAR")
+
+```
+
+# Meteorology
+
+```{r}
+
+# The RM Young logs three sentences, each at 1 Hz:
+#   $WIMW1,<dir>,R,<speed>,N,A   wind sensor 1 -- direction and speed
+#   $WIMW2,<dir>,R,<speed>,N,A   wind sensor 2 -- direction and speed
+#   $WIXDR,C,<temp>,C,TEMP,H,<rh>,%,RH,P,<baro>,hPa,BARO
+#
+# Wind is logged relative to the ship (the "R" reference field): the direction is
+# a bearing off the bow, not off true north, and it is not corrected for the
+# ship's own heading and speed here. Speed is in knots (the "N" units field).
+#
+# Unlike the other instruments, the met stream is checksummed before use -- see
+# nmea_ok() above.
+
+met_lines <- read_all_lines("rmyoung")
+
+met_ok <- nmea_ok(met_lines)
+message(sum(!met_ok), " of ", length(met_lines), " met sentences failed checksum")
+met_lines <- met_lines[met_ok]
+
+MW_COLS  <- c("datetime_type","wind_dir","dir_ref","wind_speed","speed_units","status")
+
+XDR_COLS <- c("datetime_type","t_type","air_temp","t_units","t_id",
+              "h_type","rel_hum","h_units","h_id",
+              "p_type","baro","p_units","p_id")
+
+# The sensor signs directions just to port of the bow ("-00", "-01"), so wrap the
+# bearing back into [0, 360). avg_wind() below is indifferent to this -- sin and
+# cos do not care -- but the full-rate values written out should not be negative.
+read_wind <- function(lines, sensor) {
+  lines |>
+    str_subset(paste0("\\$WIMW", sensor, ",")) |>
+    split_fields(MW_COLS) |>
+    mutate(
+      datetimeISO = iso_from_field(datetime_type),
+      datetime    = parse_iso(datetimeISO),
+      wind_dir    = as.numeric(wind_dir) %% 360,
+      wind_speed  = as.numeric(wind_speed)
+    ) |>
+    # status "A" (valid) has the checksum still attached to it; "V" would be void
+    filter(str_starts(status, "A"), !is.na(datetime), !is.na(wind_dir), !is.na(wind_speed)) |>
+    select(datetimeISO, datetime, wind_dir, wind_speed)
+}
+
+wind1 <- read_wind(met_lines, 1)
+wind2 <- read_wind(met_lines, 2)
+
+xdr <- met_lines |>
+  str_subset("\\$WIXDR,") |>
+  split_fields(XDR_COLS) |>
+  mutate(
+    datetimeISO = iso_from_field(datetime_type),
+    datetime    = parse_iso(datetimeISO),
+    air_temperature_degree_c  = as.numeric(air_temp),
+    relative_humidity_percent = as.numeric(rel_hum),
+    barometric_pressure_hpa   = as.numeric(baro)
+  ) |>
+  select(datetimeISO, datetime, air_temperature_degree_c,
+         relative_humidity_percent, barometric_pressure_hpa)
+
+# plot raw data
+qc(ggplot(wind1, aes(x = datetime, y = wind_speed))+geom_point()+geom_point(data = wind2, aes(x = datetime, y = wind_speed), color = "blue3"))
+qc(ggplot(wind1, aes(x = datetime, y = wind_dir))+geom_point()+geom_point(data = wind2, aes(x = datetime, y = wind_dir), color = "blue3"))
+qc(ggplot(xdr, aes(x = datetime, y = air_temperature_degree_c))+geom_point())
+qc(ggplot(xdr, aes(x = datetime, y = relative_humidity_percent))+geom_point())
+qc(ggplot(xdr, aes(x = datetime, y = barometric_pressure_hpa))+geom_point())
+
+```
+
+```{r}
+
+# calculate 1-minute average of wind, air temperature, humidity, pressure
+
+met_1min <- avg_wind(wind1, "minute", "wind1") |>
+  full_join(avg_wind(wind2, "minute", "wind2"), by = "datetime") |>
+  full_join(
+    xdr |>
+      group_by(datetime = floor_date(datetime, unit = "minutes")) |>
+      summarize(across(c(air_temperature_degree_c, relative_humidity_percent,
+                         barometric_pressure_hpa), mean), .groups = "drop"),
+    by = "datetime"
+  ) |>
+  arrange(datetime)
+
+# The met sensor runs on the dock before the GPS does, so this covers more
+# minutes than the underway spine; the join below keeps only the overlap.
+write_intermediate(
+  met_1min |> mutate(date = iso_offset(datetime)) |> relocate(date) |> select(-datetime),
+  "met_1min"
+)
+
+# plot averaged timeseries
+qc(ggplot(met_1min, aes(x = datetime, y = wind1_speed_kt))+geom_point())
+qc(ggplot(met_1min, aes(x = datetime, y = wind1_rel_dir_deg))+geom_point())
+qc(ggplot(met_1min, aes(x = datetime, y = air_temperature_degree_c))+geom_point())
+
+```
+
+```{r}
+
+# join with other 1-min data
+
+underway_m <- left_join(underway_v, met_1min, by = "datetime")
+
+# every minute of the spine should have met on it
+sum(is.na(underway_m$air_temperature_degree_c))
+sum(duplicated(underway_m$datetime))
+
+underway_m <- underway_m |>
+  select(-datetime) |>
+  mutate(across(where(is.numeric), zap_neg_zero))
+
+# The full product: position, chl, turbidity, T/C/S, attitude, speed, and met.
+write_csv(underway_m, product("underway_noPAR"))
+
+```

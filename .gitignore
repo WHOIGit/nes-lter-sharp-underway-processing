@@ -1,0 +1,55 @@
+# History files
+.Rhistory
+.Rapp.history
+
+# Session data
+.RData
+.RDataTmp
+.Ruserdata
+
+# Example code in package build process
+*-Ex.R
+
+# Output files from R CMD build / check
+/*.tar.gz
+/*.Rcheck/
+
+# RStudio
+.Rproj.user/
+
+# renv
+renv/library/
+renv/local/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/sandbox/
+renv/staging/
+
+# knitr / R Markdown
+*_cache/
+/cache/
+*_files/
+convert_sharp_underway.html
+
+# produced vignettes
+vignettes/*.html
+vignettes/*.pdf
+
+# R Environment Variables
+.Renviron
+.Rprofile.user
+
+# pkgdown site
+docs/
+
+# translation temp files
+po/*~
+
+# Data directories
+input/
+output/
+
+# OS cruft
+.DS_Store
+Thumbs.db
