@@ -18,6 +18,11 @@ library(readr)
 library(tidyr)
 library(stringr)
 
+# The COAPS/FSU SAMOS true-wind algorithm (Smith & Bourassa, samos@coaps.fsu.edu),
+# vendored unmodified. Supplies truew(), which the Meteorology section uses to
+# correct the ship-relative wind. See R/tw.R.
+source(here("R", "tw.R"))
+
 ```
 
 # helpers
@@ -46,6 +51,19 @@ qc <- function(expr) {
   if (inherits(x, "ggplot")) print(x)
   invisible(x)
 }
+
+# Zero-line reference: the clockwise angle from the bow to the anemometer's zero
+# line, needed to turn ship-relative wind into true wind. 0 means the zero line
+# is the bow, which is the normal meaning of the "R" (relative) reference field
+# the RM Young puts in its $WIMW sentences.
+#
+# CAVEAT: 0 is an assumption. It has NOT been confirmed with the R/V Sharp that
+# either anemometer is aligned to the bow. If the ship reports an offset, set
+# SHARP_ZLR to it. A wrong zlr rotates true wind direction by exactly that many
+# degrees and leaves true wind speed almost untouched, so it is not self-evident
+# in the output -- the wind1-vs-wind2 QC plot at the end of the Meteorology
+# section is the check that would catch the two masts differing from each other.
+zlr <- as.numeric(Sys.getenv("SHARP_ZLR", unset = "0"))
 
 # Root of the raw instrument logs, one subdirectory per instrument. The raw logs
 # are too large to keep in the project, so they live outside it: point
@@ -192,6 +210,67 @@ avg_wind <- function(df, unit, prefix) {
     mutate(rel_dir_deg = (atan2(u, v) * 180 / pi) %% 360) |>
     select(datetime, rel_dir_deg, speed_kt) |>
     rename_with(\(x) paste0(prefix, "_", x), c(rel_dir_deg, speed_kt))
+}
+
+# Correct one anemometer's ship-relative wind to true wind -- the direction the
+# wind blows FROM referenced to true north, and its speed over the fixed earth --
+# by subtracting out the ship's own motion. Adds <prefix>_true_dir_deg and
+# <prefix>_true_speed_kt, and leaves the relative columns in place.
+#
+# The vector math is truew() from R/tw.R. cspd and wspd have to be in the same
+# units, and truew() does not convert: both are knots here (speed_kt from $INVTG,
+# and $WIMW reports knots), so true speed comes out in knots too. Do not hand it
+# speed_km. wdir has to be meteorological -- the direction the wind comes FROM --
+# which is what $WIMW already reports, so it goes in as-is.
+#
+# North comes back as 360, not 0, whenever the wind is blowing: that is truew()
+# honoring the WMO convention, and it is left alone.
+true_wind <- function(df, prefix, zlr_deg = zlr, wmis = DEFAULT_MISSING_VALUES) {
+  crse <- df$course_true_deg
+  cspd <- df$speed_kt
+  hd   <- df$heading
+  wdir <- df[[paste0(prefix, "_rel_dir_deg")]]
+  wspd <- df[[paste0(prefix, "_speed_kt")]]
+
+  # truew() needs a heading referenced to true north. Refuse to compute rather
+  # than quietly hand it a magnetic one.
+  hd[!df$heading_type %in% TRUE] <- NA_real_
+
+  # $INVTG leaves course blank when the ship is not making way, so a stopped ship
+  # has speed 0 and no course. Course only ever reaches the math as
+  # cspd * cos(course), which is 0 for any course once cspd is 0 -- so fill a
+  # course in rather than throw the record away. (A course missing while the ship
+  # IS moving stays missing, and the row goes to NA below.)
+  crse[is.na(crse) & !is.na(cspd) & cspd == 0] <- 0
+
+  # truew() cannot see NA -- an NA reaching one of its range checks aborts the
+  # call -- so missingness has to travel as the sentinel values it was written to
+  # recognize. Note wmis is ordered c(crse, cspd, wdir, wspd, hd), which is NOT
+  # the argument order of truew() itself.
+  na_to <- function(x, sentinel) if_else(is.na(x), sentinel, as.numeric(x))
+  crse <- na_to(crse, wmis[1])
+  cspd <- na_to(cspd, wmis[2])
+  wdir <- na_to(wdir, wmis[3])
+  wspd <- na_to(wspd, wmis[4])
+  hd   <- na_to(hd,   wmis[5])
+
+  # One row at a time, via truew() rather than its truewinds() wrapper: every
+  # setting of truewinds()' `sel` argument, including the one documented as
+  # silent, prints a diagnostic table, which would land in the knitted report.
+  tw <- pmap(
+    list(crse = crse, cspd = cspd, wdir = wdir, hd = hd, wspd = wspd),
+    \(crse, cspd, wdir, hd, wspd) truew(crse = crse, cspd = cspd, wdir = wdir,
+                                        zlr = zlr_deg, hd = hd, wspd = wspd,
+                                        wmis = wmis)
+  )
+  tdir <- map_dbl(tw, "tdir")
+  tspd <- map_dbl(tw, "tspd")
+
+  # A missing or out-of-range record comes back as the sentinel, never as NA.
+  # Sentinels must not reach the product.
+  df[[paste0(prefix, "_true_dir_deg")]]  <- if_else(tdir == wmis[3], NA_real_, tdir)
+  df[[paste0(prefix, "_true_speed_kt")]] <- if_else(tspd == wmis[4], NA_real_, tspd)
+  df
 }
 
 ```
@@ -512,11 +591,14 @@ nrow(underway_v_check)
 
 # compare heading variables, heading true from pash lines and course true from vtg lines
 qc(ggplot(underway_v, aes(x = datetime, y = heading))+geom_point()+geom_point(data = underway_v, aes(x = datetime, y = courseTrue), color = "blue3"))
-# almost identical, don't think we need both
+# These track each other closely, but they are not the same variable and both are
+# published: heading is where the bow points, course is where the ship actually
+# goes, and the difference between them is the crab angle the ship carries under
+# wind and current. The true wind correction in the Meteorology section needs
+# both, and publishing course is what lets a downstream user reproduce it.
 
 underway_v <- underway_v |>
-  select(-courseTrue) |>
-  rename(speed_kt = speedKt, speed_km = speedKm) |>
+  rename(course_true_deg = courseTrue, speed_kt = speedKt, speed_km = speedKm) |>
   relocate(date, datetimeISO, .before = dec_lat) |>
   mutate(across(where(is.numeric), zap_neg_zero))
 
@@ -636,11 +718,54 @@ underway_m <- left_join(underway_v, met_1min, by = "datetime")
 sum(is.na(underway_m$air_temperature_degree_c))
 sum(duplicated(underway_m$datetime))
 
+# The wind the anemometers report is the wind the ship feels, which is the real
+# wind plus the ship's own motion through it. Subtract the ship back out to get
+# the wind an observer standing still would have measured. Both sensors are
+# corrected; each keeps its relative columns alongside its true ones.
+underway_m <- underway_m |>
+  true_wind("wind1") |>
+  true_wind("wind2") |>
+  relocate(wind1_true_dir_deg, wind1_true_speed_kt, .after = wind1_speed_kt) |>
+  relocate(wind2_true_dir_deg, wind2_true_speed_kt, .after = wind2_speed_kt)
+
+# When the ship is not moving there is nothing to subtract, so true wind must
+# collapse to the relative wind simply rotated onto true north. That is the one
+# case with a closed-form answer, so check it against one: this should be 0.
+underway_m |>
+  filter(speed_kt == 0, heading_type) |>
+  mutate(
+    dir_err = abs(((wind1_true_dir_deg - (heading + wind1_rel_dir_deg + zlr)) %% 360 + 180) %% 360 - 180),
+    spd_err = abs(wind1_true_speed_kt - wind1_speed_kt)
+  ) |>
+  summarize(n = sum(!is.na(dir_err)),
+            max_dir_err = max(c(0, dir_err), na.rm = TRUE),
+            max_spd_err = max(c(0, spd_err), na.rm = TRUE))
+
 underway_m <- underway_m |>
   select(-datetime) |>
   mutate(across(where(is.numeric), zap_neg_zero))
 
-# The full product: position, chl, turbidity, T/C/S, attitude, speed, and met.
+# The two anemometers see the same wind, so their true winds should scatter about
+# the 1:1 line. What to look for is a *constant rotational offset* between them,
+# which is the signature of the two masts having different zero lines.
+#
+# Do not read the raw spread as an error in the correction. The two sensors
+# disagree in true direction by a bit more than they do in relative direction,
+# and that is geometry, not a bug: converting to true winds rescales the wind
+# vector by (apparent speed / true speed), so a fixed disagreement between the
+# sensors is amplified whenever the ship is steaming into the wind and damped
+# whenever it is running with it. Speed, which is not rescaled that way, does
+# agree more closely in true coordinates than in relative.
+qc(ggplot(underway_m, aes(x = wind1_true_dir_deg, y = wind2_true_dir_deg))+geom_point(alpha = 0.2)+geom_abline(slope = 1, color = "blue3")+coord_fixed())
+qc(ggplot(underway_m, aes(x = wind1_true_speed_kt, y = wind2_true_speed_kt))+geom_point(alpha = 0.2)+geom_abline(slope = 1, color = "blue3")+coord_fixed())
+
+# True vs relative over the cruise: the correction should be largest when the
+# ship is fastest, and the two should converge as it slows.
+qc(ggplot(underway_m, aes(x = datetimeISO |> parse_iso()))+geom_point(aes(y = wind1_rel_dir_deg), color = "grey60")+geom_point(aes(y = wind1_true_dir_deg))+labs(x = "datetime", y = "wind1 direction (grey = relative, black = true)"))
+qc(ggplot(underway_m, aes(x = datetimeISO |> parse_iso()))+geom_point(aes(y = wind1_speed_kt), color = "grey60")+geom_point(aes(y = wind1_true_speed_kt))+labs(x = "datetime", y = "wind1 speed, kt (grey = relative, black = true)"))
+
+# The full product: position, chl, turbidity, T/C/S, attitude, course, speed, and
+# met -- with wind reported both relative to the ship and true.
 write_csv(underway_m, product("underway_noPAR"))
 
 ```
