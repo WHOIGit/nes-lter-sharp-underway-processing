@@ -10,9 +10,7 @@ Everything happens in one notebook: `convert_sharp_underway.Rmd`.
 
 - **R** 4.1 or newer (the code uses the native `|>` pipe and `\(x)` lambdas). Developed on 4.5.3.
 - **RStudio** (any recent version).
-- **The raw logs.** They are not in this repository — they are too big. Get the
-  `sharp_raw` directory from Jade Futrelle (jfutrelle@whoi.edu) and unpack it
-  somewhere on your machine. See "Where the raw data goes" below.
+- **The raw logs.** They are not in this repository — they are too big.
 
 ## 1. Install the R packages
 
