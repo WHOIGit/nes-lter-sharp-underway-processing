@@ -42,7 +42,8 @@
 #             (david.cohn@gmail.com); verified on python 2.7-3.5
 # 4/12/2021 : Added a check to ensure the input lists to truewinds() have the
 #             same length. Change made by Homer McMillan (hmcmillan@coaps.fsu.edu)
-# 2026      : Converted from python to R.
+# 2026      : Converted from python to R using Claude Code with Opus 4.8
+#             contact: (jfutrelle@whoi.edu)
 
 DEFAULT_ZLR <- 0.0  # clockwise angle between bow and anemometer reference line
 DEFAULT_MISSING_VALUES <- c(-1111.0,  # missing val for course_over_ground
