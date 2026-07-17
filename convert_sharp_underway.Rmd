@@ -29,10 +29,9 @@ source(here("R", "tw.R"))
 
 ```{r}
 
-# Cruise the raw logs belong to; prefixes every file written to output/, and
-# selects the event log. It does NOT select the raw logs -- SHARP_RAW_ROOT does
-# that -- so the two are cross-checked below. Set SHARP_CRUISE in the
-# environment, or edit this line.
+# Cruise the raw logs belong to. Prefixes every file written to output/, and
+# selects the cruise's input directory: its raw logs, and its event log. Set
+# SHARP_CRUISE in the environment, or edit this line.
 cruise <- tolower(Sys.getenv("SHARP_CRUISE", unset = "hrs2606"))
 
 # Every plot in this notebook is QC, not a product: nothing written to output/
@@ -65,39 +64,59 @@ qc <- function(expr) {
 # section is the check that would catch the two masts differing from each other.
 zlr <- as.numeric(Sys.getenv("SHARP_ZLR", unset = "0"))
 
-# Root of the raw instrument logs, one subdirectory per instrument. The raw logs
-# are too large to keep in the project, so they live outside it: point
-# SHARP_RAW_ROOT at wherever they are unpacked, or drop them in input/sharp_raw.
-raw_root <- Sys.getenv("SHARP_RAW_ROOT", unset = here("input/raw"))
+# Root of this cruise's raw instrument logs: one subdirectory per instrument,
+# each holding its own raw/ (input/hrs2606/raw/gps01/raw/HS2606EM_gps01-...).
+# Cruises accumulate side by side under input/, so adding one is dropping a
+# directory in, not editing this notebook. The logs are large; SHARP_RAW_ROOT
+# points at a cruise's raw/ kept outside the project.
+raw_root <- Sys.getenv("SHARP_RAW_ROOT", unset = here("input", cruise, "raw"))
 
 if (!dir.exists(raw_root)) {
   stop("raw log directory not found: ", raw_root,
-       "\nUnpack the raw logs there, or set SHARP_RAW_ROOT to their location.")
+       "\nUnpack ", cruise, "'s raw logs there, or set SHARP_RAW_ROOT to ",
+       "their location.")
 }
 
-# `cruise` only labels the output; nothing about it points at the raw logs. Get
-# the two out of step -- process one cruise's logs while `cruise` still names the
-# last one -- and every file lands mislabelled, with nothing to say so. The raw
-# filenames carry the cruise number (HS2606EM_gps01-2026-07-09), so check it.
-cruise_num  <- str_extract(cruise, "\\d+")
-raw_files   <- basename(dir(raw_root, recursive = TRUE))
-matches     <- str_detect(raw_files, stringr::fixed(cruise_num))
+# `cruise` now picks the directory as well as labelling the output, so the two
+# can no longer drift apart the way they could when every cruise shared one
+# input/raw. What is left to catch is misfiling: another cruise's logs sitting
+# in this cruise's directory. The ship names every file for the cruise it
+# recorded (HS2606EM_gps01-2026-07-09), so take that number back out of the
+# filenames and require the whole directory to agree on one.
+#
+# The number the ship writes is not always the cruise's own -- HRS2601's logs
+# are all labelled HS2501, the previous year's number, which the ship's logger
+# was never updated from. So a label that disagrees with the directory is a
+# mislabel and warns; two different labels in one directory is genuinely mixed
+# data and stops.
+#
+# PAR is logged by Biospherical's software rather than the ship's, and its
+# filenames carry only a date (BSI20260423_145702.csv). There is nothing in them
+# to check a cruise against, so they sit out of this. See process_par.R.
+cruise_num <- str_extract(cruise, "\\d+")
+raw_files  <- basename(dir(raw_root, recursive = TRUE))
 
 if (length(raw_files) == 0) {
   stop("no raw log files found under: ", raw_root)
 }
-if (!any(matches)) {
-  stop("cruise/raw-log mismatch: cruise is \"", cruise, "\", but none of the ",
-       length(raw_files), " raw filenames under ", raw_root, " mention ",
-       cruise_num, " (e.g. ", raw_files[1], ").",
-       "\nSet SHARP_CRUISE to the cruise these logs belong to, or point ",
-       "SHARP_RAW_ROOT at the logs for ", cruise, ".")
+
+ship_num   <- str_match(raw_files, "^HS(\\d{4})")[, 2]
+ship_found <- unique(ship_num[!is.na(ship_num)])
+
+if (length(ship_found) > 1) {
+  stop("logs from more than one cruise are mixed together under ", raw_root,
+       ": the ship labelled some HS", paste(sort(ship_found), collapse = ", HS"),
+       ".\nEach input/<cruise>/ directory holds one cruise's logs.")
 }
-if (!all(matches)) {
-  warning(sum(!matches), " of ", length(raw_files), " raw filenames do not ",
-          "mention ", cruise_num, " -- logs from more than one cruise may be ",
-          "mixed together under ", raw_root, ". First: ",
-          raw_files[!matches][1])
+if (length(ship_found) == 0) {
+  warning("none of the ", length(raw_files), " files under ", raw_root,
+          " are ship logs named HS<cruise>_<instrument>-<date>, so there is ",
+          "nothing to check \"", cruise, "\" against. First: ", raw_files[1])
+} else if (ship_found != cruise_num) {
+  warning("cruise is \"", cruise, "\", but the ship labelled these logs HS",
+          ship_found, ". Taking input/", cruise, "/ as authoritative and ",
+          "proceeding -- this is expected for hrs2601, whose logs are all ",
+          "HS2501. Check the directory if it is not.")
 }
 
 # Products are written here; keep them out of the raw tree.
@@ -303,13 +322,15 @@ gps01 <- gps01 |> select(datetimeISO, datetime, dec_lat, dec_lon)
 qc(ggplot(gps01, aes(x = datetime, y = dec_lat))+geom_point())
 qc(ggplot(gps01, aes(x = datetime, y = dec_lon))+geom_point())
 
-# The event log is a cruise-level product, not raw instrument output; it is only
-# ever overlaid on the track plots, so it is not read at all when plotting is
-# off, and a missing one is not an error. Its full name carries a timestamp that
-# cannot be guessed (R2R_ELOG_HRS2606HS_FINAL_EVENTLOG_20260427_160219.csv), so
-# match on the stable part of the name inside the cruise's own input directory --
-# staging one cruise's event log for another is then not possible by accident.
-elog_dir  <- here("input", toupper(cruise))
+# The event log is a cruise-level product, not raw instrument output, so it sits
+# beside the cruise's raw/ rather than inside it (input/hrs2606/R2R_ELOG_...).
+# It is only ever overlaid on the track plots, so it is not read at all when
+# plotting is off, and a missing one is not an error. Its full name carries a
+# timestamp that cannot be guessed
+# (R2R_ELOG_HRS2606HS_FINAL_EVENTLOG_20260427_160219.csv), so match on the
+# stable part of the name inside the cruise's own directory -- staging one
+# cruise's event log for another is then not possible by accident.
+elog_dir  <- here("input", cruise)
 elog_path <- dir(elog_dir, pattern = "EVENTLOG.*\\.csv$", full.names = TRUE,
                  ignore.case = TRUE)
 
