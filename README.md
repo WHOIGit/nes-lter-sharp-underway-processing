@@ -4,15 +4,15 @@ Converts the raw underway instrument logs from an R/V Hugh R. Sharp cruise into
 the published 1-minute CSV product. Written for **HRS2601**; defaults to
 **HRS2606**. Set `SHARP_CRUISE` to process a different cruise.
 
-Everything happens in one notebook: `convert_sharp_underway.Rmd`.
+Everything happens in one notebook: `convert_sharp_underway.Rmd`, plus
+`process_par.R` for the PAR channel, which the ship logs separately and which
+usually arrives later (see "PAR" below).
 
 ## What you need
 
 - **R** 4.1 or newer (the code uses the native `|>` pipe and `\(x)` lambdas). Developed on 4.5.3.
 - **RStudio** (any recent version).
-- **The raw logs.** They are not in this repository — they are too big. Get the
-  `sharp_raw` directory from Jade Futrelle (jfutrelle@whoi.edu) and unpack it
-  somewhere on your machine. See "Where the raw data goes" below.
+- **The raw logs.** They are not in this repository — they are too big.
 
 ## 1. Install the R packages
 
@@ -34,45 +34,49 @@ else and files will land in the wrong place.
 
 ## 3. Where the raw data goes
 
-The raw logs are one directory per instrument, each containing a `raw`
-subdirectory of daily log files:
+One directory per cruise under `input/`, each holding one directory per
+instrument, each holding a `raw` subdirectory of daily log files:
 
 ```
-sharp_raw/
-├── gps01/raw/       # GPS — $GPGGA position fixes
-├── flnturt/raw/     # FLNTU fluorometer — chlorophyll + turbidity (tab-delimited)
-├── sbe4501/raw/     # SBE45 thermosalinograph — temp, conductivity, salinity
-├── pos/raw/         # POS MV — $PASHR attitude, $INVTG course + speed
-└── rmyoung/raw/     # RM Young met — wind, air temp, humidity, pressure
+input/
+├── hrs2601/
+│   └── raw/
+│       ├── gps01/raw/       # GPS — $GPGGA position fixes
+│       ├── flnturt/raw/     # FLNTU fluorometer — chlorophyll + turbidity (tab-delimited)
+│       ├── sbe4501/raw/     # SBE45 thermosalinograph — temp, conductivity, salinity
+│       ├── pos/raw/         # POS MV — $PASHR attitude, $INVTG course + speed
+│       ├── rmyoung/raw/     # RM Young met — wind, air temp, humidity, pressure
+│       └── par/raw/         # Biospherical PAR — BSI*.csv (see "PAR" below)
+└── hrs2606/
+    └── raw/
+        └── ...
 ```
 
-You have two options:
+Cruises accumulate side by side. Adding one is dropping a directory in and
+setting `SHARP_CRUISE` to its name — there is nothing to edit.
 
-**Option A — put the data inside the project (simplest).**
-Unpack the logs so the tree above sits at `input/sharp_raw/` inside this
-project directory. Nothing else to configure.
+`SHARP_CRUISE` selects the directory, so it cannot be out of step with the logs
+it processes. If the notebook cannot find them it stops immediately with the
+path it tried, so a typo is easy to spot.
 
-**Option B — leave the data where it is, and point at it.**
-Set the `SHARP_RAW_ROOT` environment variable to the `sharp_raw` directory.
-The easiest way is to create a file named `.Renviron` in the project root
-containing one line:
+**If the logs are too big to keep in the project**, leave them where they are and
+set `SHARP_RAW_ROOT` to one cruise's `raw` directory. The easiest way is a file
+named `.Renviron` in the project root containing one line:
 
 ```
-SHARP_RAW_ROOT=/absolute/path/to/sharp_raw
+SHARP_RAW_ROOT=/absolute/path/to/hrs2606/raw
 ```
 
-Then restart R (Session → Restart R). On Windows, use forward slashes:
-`SHARP_RAW_ROOT=C:/Users/you/data/sharp_raw`.
-
-If the notebook cannot find the raw logs it stops immediately with a message
-telling you which path it tried, so a typo here is easy to spot.
+Then restart R (Session → Restart R). On Windows, use forward slashes. Note this
+overrides the cruise directory, so `SHARP_CRUISE` must be set to match — see
+"Which cruise these logs are" below.
 
 ### Optional: the cruise event log
 
-If you have the cruise's R2R event log, put it at `input/<CRUISE>/` inside the
-project — for HRS2606, that is `input/HRS2606/`. The notebook picks up any file
-in that directory whose name matches `*EVENTLOG*.csv`, so the datestamped R2R
-name (`R2R_ELOG_HRS2606HS_FINAL_EVENTLOG_20260427_160219.csv`) can be dropped in
+If you have the cruise's R2R event log, put it in the cruise's own directory
+beside `raw/` — for HRS2606, that is `input/hrs2606/`. The notebook picks up any
+file there whose name matches `*EVENTLOG*.csv`, so the datestamped R2R name
+(`R2R_ELOG_HRS2606HS_FINAL_EVENTLOG_20260427_160219.csv`) can be dropped in
 as-is. Because the directory is named for the cruise, one cruise's event log
 cannot end up overlaid on another's track by accident.
 
@@ -101,22 +105,38 @@ corresponding line in the notebook's helpers chunk.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `SHARP_CRUISE` | `hrs2606` | Names the cruise: prefixes every output file, and selects `input/<CRUISE>/` as the event log directory |
-| `SHARP_RAW_ROOT` | `input/sharp_raw` | Where the raw instrument logs are |
-| `SHARP_PLOTS` | off (`0`) | `1` draws the QC plots (29 of them, or 31 with an event log) into the knitted report |
+| `SHARP_CRUISE` | `hrs2606` | Which cruise to process: selects `input/<cruise>/` (its raw logs and event log), and prefixes every output file |
+| `SHARP_RAW_ROOT` | `input/<cruise>/raw` | Where that cruise's raw instrument logs are |
+| `SHARP_PLOTS` | off (`0`) | `1` draws the QC plots (33 of them, or 35 with an event log) into the knitted report |
 | `SHARP_INTERMEDIATES` | off (`0`) | `1` writes the nine intermediate CSVs alongside the product |
+| `SHARP_ZLR` | `0` | Anemometer zero-line reference, in degrees — see "true wind" below |
 
 The QC plots are the bulk of the runtime — turning them on takes the run from
 about 30 seconds to about two minutes. Nothing written to `output/` depends on
 them, so a run with plots off produces byte-for-byte identical CSVs.
 
-**`SHARP_CRUISE` and `SHARP_RAW_ROOT` are independent**, so it is possible to ask
-for one cruise while pointing at another's logs — which would silently mislabel
-every output file. The notebook cross-checks them: the raw log filenames carry
-the cruise number (`HS2606EM_gps01-2026-07-09`), and if none of them match the
-cruise you asked for, it stops before doing any work. If only some match, it
-warns that logs from more than one cruise may be mixed together under the raw
-root.
+### Which cruise these logs are
+
+`SHARP_CRUISE` picks the input directory, so asking for one cruise while reading
+another's logs is not something that happens by accident. What the notebook still
+checks for is misfiling — another cruise's logs sitting in this cruise's
+directory. The ship names every file for the cruise it recorded
+(`HS2606EM_gps01-2026-07-09`), so the notebook takes that number back out of the
+filenames and requires the whole directory to agree on one. **Two different
+numbers in one directory stops the run.**
+
+The number the ship writes is not always the cruise's own. **HRS2601's logs are
+all labelled `HS2501`** — the previous year's number, which the ship's logger was
+never updated from. That is a mislabel rather than mixed data, so it warns and
+proceeds, treating `input/hrs2601/` as authoritative. Expect one warning when
+processing HRS2601; if you see it for any other cruise, check the directory.
+
+PAR sits out of this check: Biospherical's logger names its files for the date
+only (`BSI20260423_145702.csv`), so there is no cruise number in them to check.
+
+If you override `SHARP_RAW_ROOT`, it points somewhere outside `input/<cruise>/`
+and the directory no longer implies the cruise — so set `SHARP_CRUISE` to match
+what you are pointing at.
 
 ## 5. What comes out
 
@@ -124,10 +144,11 @@ By default, one CSV in `output/` (the directory is created if it isn't there):
 
 | File | What |
 |------|------|
-| `<cruise>_underway_noPAR.csv` | **The product** — 1-minute position, chl, turbidity, T/C/S, attitude, speed, and met |
+| `<cruise>_underway_noPAR.csv` | **The product** — 1-minute position, chl, turbidity, T/C/S, attitude, course, speed, and met (wind both relative and true) |
 
 The cruise prefix comes from `SHARP_CRUISE` (`hrs2606` if unset). `noPAR` means
-the PAR channel is not included.
+the PAR channel is not included — it is logged separately and added by
+`process_par.R`, which is section 6 below.
 
 With `SHARP_INTERMEDIATES=1`, nine more files are written next to it. None of
 them are published; they exist for QC, and so that the products which predate the
@@ -145,6 +166,53 @@ joined on yet).
 | `<cruise>_pash.csv` | All parsed `$PASHR` attitude sentences, full rate |
 | `<cruise>_vtg.csv` | All parsed `$INVTG` course/speed sentences, full rate |
 | `<cruise>_vtg_1min.csv` | 1-minute course and speed |
+
+## 6. PAR
+
+PAR is logged by Biospherical's LoggerLight software rather than by the ship's
+underway system, so it arrives separately, in its own format, and usually after
+the rest of the cruise has already been processed. That is why it is a separate
+script — `process_par.R` — and why the notebook's product is named `noPAR`.
+
+Its logs are filed as one more instrument under the cruise:
+`input/<cruise>/raw/par/raw/BSI*.csv`. Run it the same way as the notebook:
+
+```
+SHARP_CRUISE=hrs2601 Rscript process_par.R
+```
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `SHARP_CRUISE` | `hrs2606` | Which cruise to process — as in the notebook |
+| `SHARP_PAR_ROOT` | `input/<cruise>/raw/par/raw` | Where the `BSI*.csv` logs are |
+| `SHARP_PLOTS` | off (`0`) | `1` draws four QC plots |
+| `SHARP_JOIN` | off (`0`) | `1` joins PAR onto `<cruise>_underway_noPAR.csv` and writes `<cruise>_underway.csv` |
+
+| File | What |
+|------|------|
+| `<cruise>_par_1min.csv` | 1-minute PAR — `date` and `par_umol_m2_s` |
+| `<cruise>_underway.csv` | With `SHARP_JOIN=1`: the notebook's product with a `par_umol_m2_s` column added. Every other column passes through untouched |
+
+Notes:
+
+- **Units.** The logger reports Einsteins/m²/s; the product reports µmol/m²/s
+  (×10⁶), the conventional PAR unit. `ScaleFactor` and `Offset+FO` in the file
+  header are provenance — LoggerLight has already applied them.
+- **The logger clock is assumed to be UTC.** Nothing in the file says so. The
+  HRS2601 logs confirm it: PAR peaks near 16:30–17:00 in logger time, which is
+  solar noon in UTC at the shelf-break longitude, not the ~12:40 a logger on
+  local time would show. The `par_diel` QC plot (`SHARP_PLOTS=1`) is what
+  rechecks this for a new cruise — the daylight lobe should straddle the blue
+  line.
+- **PAR does not cover the whole cruise.** The logger is started and stopped
+  independently of the underway system, so minutes with no PAR are normal and
+  reach the product as `NA`. On HRS2601 the logger started about 27 hours into
+  the cruise, so 68% of the underway minutes have PAR. The script prints every
+  gap it finds.
+- **A cruise with no overlap at all stops the join**, rather than writing a
+  column of `NA` — that is the signature of a cruise or timezone mismatch.
+- PAR is averaged over each minute, like chl and T/C/S, not sampled
+  instantaneously like position and attitude.
 
 ## Notes on the processing
 
@@ -166,13 +234,18 @@ and speed, one per sensor) and `$WIXDR` (air temperature, relative humidity,
 barometric pressure). All of them are averaged onto the same 1-minute grid as the
 other channels.
 
-- **The wind is relative to the ship, not to true north.** The sentences carry an
-  `R` reference field: the direction is a bearing off the bow and the speed is
-  apparent wind. Neither is corrected for the ship's own heading and speed, so
-  these are *not* true wind. The columns are named `wind1_rel_dir_deg` /
-  `wind2_rel_dir_deg` to keep that hard to miss. Speeds are in knots.
-- **Both wind sensors are kept.** They agree closely (on HRS2606, 0.5 kt and about
-  10° on average) but neither is designated primary here, so both are published.
+- **Wind is published twice: as measured, and corrected.** What the anemometers
+  report is relative to the ship — the sentences carry an `R` reference field, so
+  the direction is a bearing off the bow and the speed is apparent wind, both of
+  them contaminated by the ship's own motion. Those columns are published as
+  `wind{1,2}_rel_dir_deg` and `wind{1,2}_speed_kt`, named `rel` to keep that hard
+  to miss. Alongside them, `wind{1,2}_true_dir_deg` and `wind{1,2}_true_speed_kt`
+  give the true wind: the ship's motion subtracted back out, so the direction is
+  referenced to true north and the speed is relative to the fixed earth. All
+  speeds are in knots; all directions are meteorological, i.e. the direction the
+  wind blows **from**.
+- **Both wind sensors are kept.** Neither is designated primary here, so both are
+  published, relative and true.
 - **Wind direction is vector-averaged.** A bearing cannot be averaged as a scalar
   — the mean of 359° and 1° is 180°, not 0° — so each sample is resolved into a
   vector, the vectors are averaged, and the bearing is taken back out. Wind speed
@@ -187,3 +260,55 @@ other channels.
   dockside head on it (with air temperatures to match — 36 °C in the sun). Those
   minutes are not in the underway product: the join keeps only minutes on the GPS
   spine.
+
+## Notes on the true wind
+
+A ship steaming at 10 knots feels a 10-knot headwind that isn't there. True wind
+is what an observer standing still would have measured: the apparent wind vector
+with the ship's own velocity vector subtracted back out.
+
+The arithmetic is not ours. `R/tw.R` is the COAPS/FSU SAMOS `truewind` algorithm
+(Shawn R. Smith and Mark A. Bourassa, `samos@coaps.fsu.edu`), the standard
+implementation for this correction, vendored into this repository unmodified and
+under its own copyright and license. The notebook calls its `truew()` once per
+minute per sensor. The R file is a translation of the reference Python
+implementation; it was checked against that Python across 12,023 cases — random
+inputs, missing values, out-of-range values, calm, and the exact boundaries — and
+agrees to within floating-point noise (worst disagreement 3 × 10⁻¹³ degrees).
+
+Four inputs go in, all of them already in the product: `heading` (where the bow
+points, true north), `course_true_deg` (where the ship actually travels over the
+ground), `sog_kts` (speed over the ground), and the sensor's relative wind. Because all
+four are published, a downstream user can reproduce or redo this correction from
+the CSV alone — which is why `course_true_deg` is published even though it tracks
+`heading` closely. The two are not the same variable, and the difference between
+them is the crab angle the ship carries under wind and current.
+
+Things worth knowing before you use these columns:
+
+- **The zero-line reference is an assumption.** True wind depends on where each
+  anemometer's zero line points relative to the bow. We assume it *is* the bow
+  (`zlr = 0`), which is the normal meaning of the `R` reference field in `$WIMW`,
+  but **this has not been confirmed with the R/V Sharp.** If the ship reports an
+  offset, set `SHARP_ZLR` to it and re-run. Be aware that a wrong `zlr` rotates
+  every true wind direction by exactly that many degrees while barely touching the
+  speeds, so it does not announce itself in the output.
+- **North is 360, not 0.** When the wind is blowing from due north the direction
+  is reported as `360.0`. That is the WMO convention and `truew()` does it
+  deliberately; `0` is reserved for calm, where direction is undefined.
+- **Heading must be true, not magnetic.** `heading_type` records which it is. On
+  the rare row where the POS MV reports a magnetic heading, true wind is left
+  empty rather than computed from it.
+- **The two sensors disagree slightly more in true direction than in relative
+  direction, and that is expected.** Converting to true wind rescales the wind
+  vector by roughly (apparent speed ÷ true speed), so a fixed disagreement between
+  the two sensors is amplified when the ship steams into the wind and damped when
+  it runs with it. On HRS2606 the median amplification is 1.00, matching that
+  ratio almost exactly. Speed, which is not rescaled this way, agrees *more*
+  closely in true coordinates (0.33 kt) than in relative (0.36 kt).
+- **Correcting a 1-minute average is not the same as averaging 1-second
+  corrections.** The wind here is vector-averaged over the minute before the
+  correction is applied, and heading, course, and speed are each the first sample
+  in the minute rather than an average. During a hard turn those are not quite the
+  same thing. On a steady course the difference is negligible; it is worth
+  remembering when reading wind through a station turn.
