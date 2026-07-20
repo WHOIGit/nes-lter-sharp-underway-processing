@@ -318,6 +318,8 @@ gps01 <- read_all_lines("gps01") |>
 qc(hist(gps01$FixQuality))
 
 gps01 <- gps01 |> select(datetimeISO, datetime, dec_lat, dec_lon)
+gps01$dec_lat <- round(gps01$dec_lat, 5)
+gps01$dec_lon <- round(gps01$dec_lon, 5)
 
 qc(ggplot(gps01, aes(x = datetime, y = dec_lat))+geom_point())
 qc(ggplot(gps01, aes(x = datetime, y = dec_lon))+geom_point())
@@ -419,6 +421,9 @@ fluor_avg <- fluor |>
   group_by(datetime = floor_date(datetime, unit = "minutes")) |>
   summarize(across(c(chl_ugl, turb_ntu), mean), .groups = "drop")
 
+fluor_avg$chl_ugl <- round(fluor_avg$chl_ugl, 2)
+fluor_avg$turb_ntu <- round(fluor_avg$turb_ntu, 2)
+
 # match 1-minute average to 1-minute instantaneous coordinates
 underway <- left_join(gps01_1min, fluor_avg, by = "datetime")
 
@@ -449,6 +454,10 @@ tsg <- read_all_lines("sbe4501") |>
 tsg_avg <- tsg |>
   group_by(datetime = floor_date(datetime, unit = "minutes")) |>
   summarize(across(c(temp, cond, sal), mean), .groups = "drop")
+
+tsg_avg$temp <- round(tsg_avg$temp, 3)
+tsg_avg$cond <- round(tsg_avg$cond, 3)
+tsg_avg$sal <- round(tsg_avg$sal, 3)
 
 # match 1-minute average to 1-minute instantaneous coordinates
 underway <- left_join(underway, tsg_avg, by = "datetime")
@@ -481,15 +490,6 @@ write_intermediate(
   underway |> select(-datetimeISO, -datetime) |> relocate(date, .before = dec_lat),
   "underway_noMet_noPAR_noPOS"
 )
-
-```
-
-# POS data
-
-```{r}
-# here's a package that could be useful
-# install.packages("devtools")
-#devtools::install_github("paleolimbot/nmea")
 
 ```
 
@@ -722,6 +722,11 @@ write_intermediate(
   "met_1min"
 )
 
+# round met parameters
+met_1min$air_temperature_degree_c <- round(met_1min$air_temperature_degree_c, 1)
+met_1min$relative_humidity_percent <- round(met_1min$relative_humidity_percent, 0)
+met_1min$barometric_pressure_hpa <- round(met_1min$barometric_pressure_hpa, 0)
+
 # plot averaged timeseries
 qc(ggplot(met_1min, aes(x = datetime, y = wind1_speed_kt))+geom_point())
 qc(ggplot(met_1min, aes(x = datetime, y = wind1_rel_dir_deg))+geom_point())
@@ -768,6 +773,17 @@ underway_m |>
 # POSIXct key rides through untouched.
 underway_m <- underway_m |>
   mutate(across(where(is.numeric), zap_neg_zero))
+
+# round wind parameters
+underway_m$wind1_rel_dir_deg <- round(underway_m$wind1_rel_dir_deg, 0)
+underway_m$wind1_true_dir_deg <- round(underway_m$wind1_true_dir_deg, 0)
+underway_m$wind1_speed_kt <- round(underway_m$wind1_speed_kt, 1)
+underway_m$wind1_true_speed_kt <- round(underway_m$wind1_true_speed_kt, 1)
+
+underway_m$wind2_rel_dir_deg <- round(underway_m$wind2_rel_dir_deg, 0)
+underway_m$wind2_true_dir_deg <- round(underway_m$wind2_true_dir_deg, 0)
+underway_m$wind2_speed_kt <- round(underway_m$wind2_speed_kt, 1)
+underway_m$wind2_true_speed_kt <- round(underway_m$wind2_true_speed_kt, 1)
 
 # The two anemometers see the same wind, so their true winds should scatter about
 # the 1:1 line. What to look for is a *constant rotational offset* between them,
