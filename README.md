@@ -4,9 +4,10 @@ Converts the raw underway instrument logs from an R/V Hugh R. Sharp cruise into
 the published 1-minute CSV product. Written for **HRS2601**; defaults to
 **HRS2606**. Set `SHARP_CRUISE` to process a different cruise.
 
-Everything happens in one notebook: `convert_sharp_underway.Rmd`, plus
-`process_par.R` for the PAR channel, which the ship logs separately and which
-usually arrives later (see "PAR" below).
+Everything happens in one notebook: `convert_sharp_underway.Rmd`. It also
+processes the PAR channel, which the ship logs separately and which usually
+arrives later; when those logs are not there yet the notebook still produces its
+`noPAR` product and skips PAR (see "PAR" below).
 
 ## What you need
 
@@ -144,11 +145,15 @@ By default, one CSV in `output/` (the directory is created if it isn't there):
 
 | File | What |
 |------|------|
-| `<cruise>_underway_noPAR.csv` | **The product** — 1-minute position, chl, turbidity, T/C/S, attitude, course, speed, and met (wind both relative and true) |
+| `<cruise>_underway.csv` | **The product** — the underway spine with the PAR channel joined on. Written when the PAR logs are present |
+| `<cruise>_underway_noPAR.csv` | The same 1-minute product without PAR — position, chl, turbidity, T/C/S, attitude, course, speed, and met (wind both relative and true). Always written; it is the deliverable until PAR arrives |
+| `<cruise>_par_1min.csv` | 1-minute PAR — `date` and `par_umol_m2_s`. Written when the PAR logs are present |
 
 The cruise prefix comes from `SHARP_CRUISE` (`hrs2606` if unset). `noPAR` means
-the PAR channel is not included — it is logged separately and added by
-`process_par.R`, which is section 6 below.
+the PAR channel is not included — it is logged separately and joined on last (see
+section 6 below). A knit run before the PAR logs arrive writes only the `noPAR`
+product; re-knitting once they have adds `<cruise>_underway.csv` and
+`<cruise>_par_1min.csv`.
 
 With `SHARP_INTERMEDIATES=1`, nine more files are written next to it. None of
 them are published; they exist for QC, and so that the products which predate the
@@ -171,27 +176,28 @@ joined on yet).
 
 PAR is logged by Biospherical's LoggerLight software rather than by the ship's
 underway system, so it arrives separately, in its own format, and usually after
-the rest of the cruise has already been processed. That is why it is a separate
-script — `process_par.R` — and why the notebook's product is named `noPAR`.
+the rest of the cruise has already been processed. The `PAR` section of the
+notebook reads it, averages it onto the same 1-minute grid as the other channels,
+and joins it onto the underway spine — no separate step to run.
 
 Its logs are filed as one more instrument under the cruise:
-`input/<cruise>/raw/par/raw/BSI*.csv`. Run it the same way as the notebook:
-
-```
-SHARP_CRUISE=hrs2601 Rscript process_par.R
-```
+`input/<cruise>/raw/par/raw/BSI*.csv`. Because the notebook produces its `noPAR`
+product first, a knit before those logs arrive still succeeds: it prints a message
+that PAR is missing and writes `<cruise>_underway_noPAR.csv` only. Drop the
+`BSI*.csv` logs in and re-knit to add the PAR files below.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `SHARP_CRUISE` | `hrs2606` | Which cruise to process — as in the notebook |
 | `SHARP_PAR_ROOT` | `input/<cruise>/raw/par/raw` | Where the `BSI*.csv` logs are |
-| `SHARP_PLOTS` | off (`0`) | `1` draws four QC plots |
-| `SHARP_JOIN` | off (`0`) | `1` joins PAR onto `<cruise>_underway_noPAR.csv` and writes `<cruise>_underway.csv` |
+
+`SHARP_CRUISE` and `SHARP_PLOTS` are the same variables the rest of the notebook
+uses — see the run table above. The PAR QC plots (including `par_diel`) are drawn
+with `SHARP_PLOTS=1` like every other plot.
 
 | File | What |
 |------|------|
 | `<cruise>_par_1min.csv` | 1-minute PAR — `date` and `par_umol_m2_s` |
-| `<cruise>_underway.csv` | With `SHARP_JOIN=1`: the notebook's product with a `par_umol_m2_s` column added. Every other column passes through untouched |
+| `<cruise>_underway.csv` | The product — the underway table with a `par_umol_m2_s` column joined on. Every other column is exactly the `noPAR` product's |
 
 Notes:
 
@@ -207,7 +213,7 @@ Notes:
 - **PAR does not cover the whole cruise.** The logger is started and stopped
   independently of the underway system, so minutes with no PAR are normal and
   reach the product as `NA`. On HRS2601 the logger started about 27 hours into
-  the cruise, so 68% of the underway minutes have PAR. The script prints every
+  the cruise, so 68% of the underway minutes have PAR. The notebook prints every
   gap it finds.
 - **A cruise with no overlap at all stops the join**, rather than writing a
   column of `NA` — that is the signature of a cruise or timezone mismatch.
