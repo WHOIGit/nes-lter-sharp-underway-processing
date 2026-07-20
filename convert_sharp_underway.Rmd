@@ -801,6 +801,16 @@ qc(ggplot(underway_m, aes(x = wind1_true_speed_kt, y = wind2_true_speed_kt))+geo
 qc(ggplot(underway_m, aes(x = datetimeISO |> parse_iso()))+geom_point(aes(y = wind1_rel_dir_deg), color = "grey60")+geom_point(aes(y = wind1_true_dir_deg))+labs(x = "datetime", y = "wind1 direction (grey = relative, black = true)"))
 qc(ggplot(underway_m, aes(x = datetimeISO |> parse_iso()))+geom_point(aes(y = wind1_speed_kt), color = "grey60")+geom_point(aes(y = wind1_true_speed_kt))+labs(x = "datetime", y = "wind1 speed, kt (grey = relative, black = true)"))
 
+# datetimeISO carries the $INVTG sample time as the raw NMEA ISO string
+# ("2026-07-09T21:13:00.291129Z"). Downstream parses the published timestamps as
+# "%Y-%m-%d %H:%M:%S%z", which has no place for the T, the Z, or the sub-second,
+# so render datetimeISO in the same space+offset form as `date`. Done here, after
+# the QC plots above that still parse the raw T...Z form via parse_iso(), and
+# once -- the second-level sample time survives; only the fractional second, which
+# the downstream format cannot represent, is dropped.
+underway_m <- underway_m |>
+  mutate(datetimeISO = iso_offset(parse_iso(datetimeISO)))
+
 # The full product: position, chl, turbidity, T/C/S, attitude, course, speed, and
 # met -- with wind reported both relative to the ship and true.
 write_csv(underway_m, product("underway_noPAR"))
