@@ -201,9 +201,12 @@ the run table above. The PAR QC plots (including `par_diel`) are drawn with
 
 Notes:
 
-- **Units.** The logger reports Einsteins/m²/s; the product reports µmol/m²/s
-  (×10⁶), the conventional PAR unit. `ScaleFactor` and `Offset+FO` in the file
-  header are provenance — LoggerLight has already applied them.
+- **Units.** The product is always µmol/m²/s, the conventional PAR unit, but the
+  logger's native unit varies by cruise: HRS2601 reports Einsteins/m²/s (mol
+  photons, ×10⁶ to µmol), HRS2606 reports µmol/m²/s directly (×1). The notebook
+  reads the file's own `Units` line and picks the multiplier from it; a cruise in
+  neither unit stops the run rather than guessing. `ScaleFactor` and `Offset+FO`
+  in the file header are provenance — LoggerLight has already applied them.
 - **The logger clock is assumed to be UTC.** Nothing in the file says so. The
   HRS2601 logs confirm it: PAR peaks near 16:30–17:00 in logger time, which is
   solar noon in UTC at the shelf-break longitude, not the ~12:40 a logger on

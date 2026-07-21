@@ -917,9 +917,10 @@ if (!have_par) {
 # cruise still parses.
 PAR_HEADER_RE <- "^Time,"
 
-# The Units line contains a superscript 2 (Einsteins/m^2/s), a single byte in the
-# logger's cp1252 output and invalid UTF-8. Read as cp1252 so the line does not
-# come back mangled or abort the read.
+# The Units line carries bytes that are invalid UTF-8 in the logger's cp1252
+# output: a superscript 2 (m^2, 0xB2), and on umol cruises a micro sign (µmol,
+# 0xB5). Read as cp1252 so the line does not come back mangled or abort the read,
+# and so the unit-detection match below sees a real µ.
 read_par_file <- function(path) {
   lines <- read_lines(path, locale = locale(encoding = "cp1252"),
                       progress = FALSE)
@@ -1000,15 +1001,28 @@ if (have_par) {
             paste(unique(par_raw$cal_date), collapse = ", "))
   }
 
-  # The conversion below is a unit change, not a calculation, and only valid
-  # because the logger says it is emitting Einsteins. Refuse to guess otherwise.
-  # Match loosely: the superscript 2 does not survive every encoding, and
-  # "Einsteins/m2/s" and "Einsteins/m^2/s" are the same units.
+  # The product is always umol/m2/s, but the logger's native unit is not the same
+  # across cruises: HRS2601 reports Einsteins/m2/s (mol photons), HRS2606 reports
+  # umol/m2/s directly. Pick the multiplier from the logger's own Units line --
+  # this is a unit change, not a calculation. Refuse to guess if it is neither.
+  # Match loosely: the superscript 2 does not survive every encoding, so match on
+  # the unit's leading word. The micro sign arrives as U+00B5 (cp1252 0xB5) from
+  # read_par_file()'s cp1252 read; also accept Greek mu, an ASCII "u", and the
+  # spelled-out "micromol".
   units_native <- unique(par_raw$units)
-  if (!all(str_detect(units_native, regex("einstein", ignore_case = TRUE)))) {
-    stop("PAR logs are not in Einsteins -- the Units line reads: ",
+  if (length(units_native) > 1) {
+    stop("PAR logs do not all report the same Units: ",
          paste(units_native, collapse = ", "),
-         "\nThe umol/m2/s conversion below assumes Einsteins/m2/s.")
+         "\nSeparate the deployments and run them one at a time.")
+  }
+  if (str_detect(units_native, regex("einstein", ignore_case = TRUE))) {
+    par_scale <- 1e6   # Einsteins (= mol photons) to umol
+  } else if (str_detect(units_native, regex("(µ|μ|u|micro)mol", ignore_case = TRUE))) {
+    par_scale <- 1     # logger already emits umol/m2/s
+  } else {
+    stop("PAR Units line is neither Einsteins nor umol/m2/s: ", units_native,
+         "\nThe product is umol/m2/s; add the conversion for this unit before ",
+         "processing.")
   }
 
   message(length(par_paths), " PAR logs, probe ", sensors,
@@ -1033,8 +1047,9 @@ if (have_par) {
     mutate(
       datetimeISO = time,
       datetime    = as.POSIXct(time, tz = "GMT", format = "%m/%d/%Y %H:%M:%S"),
-      # Einsteins (= mol photons) to umol, the conventional PAR unit.
-      par_umol_m2_s = par_native * 1e6
+      # par_scale carries the logger's native unit to umol/m2/s (see above): 1e6
+      # for Einsteins, 1 for a logger already reporting umol.
+      par_umol_m2_s = par_native * par_scale
     ) |>
     filter(!is.na(datetime)) |>
     arrange(datetime) |>
