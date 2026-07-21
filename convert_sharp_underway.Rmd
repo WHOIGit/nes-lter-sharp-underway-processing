@@ -1,6 +1,25 @@
 ---
 title: "convert_raw_underway"
 output: html_document
+params:
+  cruise:
+    label: "Cruise (selects input/<cruise>/ and prefixes every output file)"
+    value: "hrs2606"
+  plots:
+    label: "Draw QC plots (slower; QC only, products unchanged)"
+    value: false
+  intermediates:
+    label: "Write the 9 intermediate CSVs alongside the product"
+    value: false
+  zlr:
+    label: "Anemometer zero-line reference (degrees clockwise from bow)"
+    value: 0
+  raw_root:
+    label: "Raw log directory (blank = input/<cruise>/raw)"
+    value: ""
+  par_root:
+    label: "PAR log directory (blank = input/<cruise>/raw/par/raw)"
+    value: ""
 ---
 
 # load required packages
@@ -29,16 +48,28 @@ source(here("R", "tw.R"))
 
 ```{r}
 
+# Every setting below comes from `params`, defined in the YAML header at the top
+# of this notebook. Knit uses those defaults; the "Knit with Parameters..." menu
+# (the small arrow beside the Knit button) opens a dialog to change them for one
+# run without editing anything. `params` only exists while knitting, though, so
+# running chunks one at a time interactively would hit "object 'params' not
+# found" -- fall back to the same defaults here so that keeps working.
+if (!exists("params")) {
+  params <- list(cruise = "hrs2606", plots = FALSE, intermediates = FALSE,
+                 zlr = 0, raw_root = "", par_root = "")
+}
+
 # Cruise the raw logs belong to. Prefixes every file written to output/, and
 # selects the cruise's input directory: its raw logs, and its event log. Set
-# SHARP_CRUISE in the environment, or edit this line.
-cruise <- tolower(Sys.getenv("SHARP_CRUISE", unset = "hrs2606"))
+# `cruise` in the Knit-with-Parameters dialog, or edit its default in the
+# `params:` block in the YAML header.
+cruise <- tolower(params$cruise)
 
 # Every plot in this notebook is QC, not a product: nothing written to output/
 # depends on one. They are the bulk of the runtime (they roughly quadruple it),
-# so they are off unless asked for -- set SHARP_PLOTS=1 in the environment, or
-# edit this line, to get the QC report back.
-make_plots <- identical(Sys.getenv("SHARP_PLOTS", unset = "0"), "1")
+# so they are off unless asked for -- tick `plots` in the Knit-with-Parameters
+# dialog (or set its default in the `params:` block) to get the QC report back.
+make_plots <- isTRUE(params$plots)
 
 # Wrap every QC plot in qc(). The argument is a lazy promise, so when plotting is
 # off the plot is never built at all. ggplot objects have to be printed to draw;
@@ -58,23 +89,25 @@ qc <- function(expr) {
 #
 # CAVEAT: 0 is an assumption. It has NOT been confirmed with the R/V Sharp that
 # either anemometer is aligned to the bow. If the ship reports an offset, set
-# SHARP_ZLR to it. A wrong zlr rotates true wind direction by exactly that many
-# degrees and leaves true wind speed almost untouched, so it is not self-evident
-# in the output -- the wind1-vs-wind2 QC plot at the end of the Meteorology
-# section is the check that would catch the two masts differing from each other.
-zlr <- as.numeric(Sys.getenv("SHARP_ZLR", unset = "0"))
+# `zlr` to it in the Knit-with-Parameters dialog. A wrong zlr rotates true wind
+# direction by exactly that many degrees and leaves true wind speed almost
+# untouched, so it is not self-evident in the output -- the wind1-vs-wind2 QC
+# plot at the end of the Meteorology section is the check that would catch the
+# two masts differing from each other.
+zlr <- as.numeric(params$zlr)
 
 # Root of this cruise's raw instrument logs: one subdirectory per instrument,
 # each holding its own raw/ (input/hrs2606/raw/gps01/raw/HS2606EM_gps01-...).
 # Cruises accumulate side by side under input/, so adding one is dropping a
-# directory in, not editing this notebook. The logs are large; SHARP_RAW_ROOT
-# points at a cruise's raw/ kept outside the project.
-raw_root <- Sys.getenv("SHARP_RAW_ROOT", unset = here("input", cruise, "raw"))
+# directory in, not editing this notebook. The logs are large; leave `raw_root`
+# blank to use input/<cruise>/raw, or set it (in the Knit-with-Parameters dialog)
+# to a cruise's raw/ kept outside the project.
+raw_root <- if (nzchar(params$raw_root)) params$raw_root else here("input", cruise, "raw")
 
 if (!dir.exists(raw_root)) {
   stop("raw log directory not found: ", raw_root,
-       "\nUnpack ", cruise, "'s raw logs there, or set SHARP_RAW_ROOT to ",
-       "their location.")
+       "\nUnpack ", cruise, "'s raw logs there, or set the raw_root parameter ",
+       "to their location.")
 }
 
 # `cruise` now picks the directory as well as labelling the output, so the two
@@ -131,8 +164,9 @@ product <- function(what) file.path(out_dir, paste0(cruise, "_", what, ".csv"))
 # $INVTG dumps, and the standalone 1-minute per-instrument files. They are useful
 # for QC and for reproducing the products that predate the met work, but they are
 # not what gets published, so they are not written unless asked for --
-# set SHARP_INTERMEDIATES=1 in the environment, or edit this line.
-write_intermediates <- identical(Sys.getenv("SHARP_INTERMEDIATES", unset = "0"), "1")
+# tick `intermediates` in the Knit-with-Parameters dialog (or set its default in
+# the `params:` block).
+write_intermediates <- isTRUE(params$intermediates)
 
 # Use for every file that is not the final product. Returns its input invisibly,
 # so it can sit in a pipeline without breaking it.
@@ -838,8 +872,9 @@ write_csv(underway_m |> select(-datetime), product("underway_noPAR"))
 # is the deliverable until PAR shows up, and re-knitting once it has adds
 # par_1min.csv and underway.csv.
 
-par_root <- Sys.getenv("SHARP_PAR_ROOT",
-                       unset = here("input", cruise, "raw", "par", "raw"))
+# Leave `par_root` blank to use input/<cruise>/raw/par/raw, or set it in the
+# Knit-with-Parameters dialog (or the `params:` block) to point elsewhere.
+par_root <- if (nzchar(params$par_root)) params$par_root else here("input", cruise, "raw", "par", "raw")
 
 # PAR is filed as one more instrument under the cruise, beside gps01 and rmyoung,
 # even though Biospherical's logger wrote it rather than the ship's underway

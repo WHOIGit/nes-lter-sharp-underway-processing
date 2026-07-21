@@ -2,7 +2,7 @@
 
 Converts the raw underway instrument logs from an R/V Hugh R. Sharp cruise into
 the published 1-minute CSV product. Written for **HRS2601**; defaults to
-**HRS2606**. Set `SHARP_CRUISE` to process a different cruise.
+**HRS2606**. Set the `cruise` parameter to process a different cruise.
 
 Everything happens in one notebook: `convert_sharp_underway.Rmd`. It also
 processes the PAR channel, which the ship logs separately and which usually
@@ -54,23 +54,18 @@ input/
 ```
 
 Cruises accumulate side by side. Adding one is dropping a directory in and
-setting `SHARP_CRUISE` to its name — there is nothing to edit.
+setting the `cruise` parameter to its name — there is nothing to edit. (All the
+notebook's settings are parameters you set at knit time; see "Run it" below.)
 
-`SHARP_CRUISE` selects the directory, so it cannot be out of step with the logs
-it processes. If the notebook cannot find them it stops immediately with the
-path it tried, so a typo is easy to spot.
+The `cruise` parameter selects the directory, so it cannot be out of step with
+the logs it processes. If the notebook cannot find them it stops immediately with
+the path it tried, so a typo is easy to spot.
 
 **If the logs are too big to keep in the project**, leave them where they are and
-set `SHARP_RAW_ROOT` to one cruise's `raw` directory. The easiest way is a file
-named `.Renviron` in the project root containing one line:
-
-```
-SHARP_RAW_ROOT=/absolute/path/to/hrs2606/raw
-```
-
-Then restart R (Session → Restart R). On Windows, use forward slashes. Note this
-overrides the cruise directory, so `SHARP_CRUISE` must be set to match — see
-"Which cruise these logs are" below.
+set the `raw_root` parameter to one cruise's `raw` directory in the
+Knit-with-Parameters dialog (see "Run it" below). On Windows, use forward
+slashes. Note this overrides the cruise directory, so `cruise` must be set to
+match — see "Which cruise these logs are" below.
 
 ### Optional: the cruise event log
 
@@ -82,15 +77,18 @@ as-is. Because the directory is named for the cruise, one cruise's event log
 cannot end up overlaid on another's track by accident.
 
 It is only used to overlay station positions on the QC track plots, so it is not
-read at all unless `SHARP_PLOTS=1` (see below). The notebook prints a message and
-carries on without it, and the CSV products are identical either way.
+read at all unless the `plots` parameter is on (see below). The notebook prints a
+message and carries on without it, and the CSV products are identical either way.
 
 ## 4. Run it
 
 With the project open, open `convert_sharp_underway.Rmd` and either:
 
-- **Knit** (the Knit button, or Ctrl/Cmd-Shift-K) to run the whole thing and
-  get an HTML report; or
+- **Knit** (the Knit button, or Ctrl/Cmd-Shift-K) to run the whole thing with the
+  default settings and get an HTML report; or
+- **Knit with Parameters…** (the small ▾ arrow beside the Knit button) to open a
+  dialog and change any setting for this one run — pick a cruise, tick the QC
+  plots, and so on — with nothing to edit; or
 - run the chunks top to bottom (the green ▶ button on each chunk) if you want
   to look at each step as it goes.
 
@@ -101,16 +99,18 @@ A default run takes about half a minute — reading the raw logs is the slow par
 
 ### Settings
 
-Set any of these in `.Renviron` (see Option B above) and restart R, or edit the
-corresponding line in the notebook's helpers chunk.
+Each setting is a **parameter**. Change one for a single run in the
+Knit-with-Parameters dialog (the ▾ beside Knit), or change its default for good
+in the `params:` block at the top of `convert_sharp_underway.Rmd`. No environment
+variables, no `.Renviron`, no restarting R.
 
-| Variable | Default | What it does |
-|----------|---------|--------------|
-| `SHARP_CRUISE` | `hrs2606` | Which cruise to process: selects `input/<cruise>/` (its raw logs and event log), and prefixes every output file |
-| `SHARP_RAW_ROOT` | `input/<cruise>/raw` | Where that cruise's raw instrument logs are |
-| `SHARP_PLOTS` | off (`0`) | `1` draws the QC plots (33 of them, or 35 with an event log) into the knitted report |
-| `SHARP_INTERMEDIATES` | off (`0`) | `1` writes the nine intermediate CSVs alongside the product |
-| `SHARP_ZLR` | `0` | Anemometer zero-line reference, in degrees — see "true wind" below |
+| Parameter | Default | What it does |
+|-----------|---------|--------------|
+| `cruise` | `hrs2606` | Which cruise to process: selects `input/<cruise>/` (its raw logs and event log), and prefixes every output file |
+| `raw_root` | blank → `input/<cruise>/raw` | Where that cruise's raw instrument logs are; blank uses the default |
+| `plots` | off | on draws the QC plots (33 of them, or 35 with an event log) into the knitted report |
+| `intermediates` | off | on writes the nine intermediate CSVs alongside the product |
+| `zlr` | `0` | Anemometer zero-line reference, in degrees — see "true wind" below |
 
 The QC plots are the bulk of the runtime — turning them on takes the run from
 about 30 seconds to about two minutes. Nothing written to `output/` depends on
@@ -118,8 +118,8 @@ them, so a run with plots off produces byte-for-byte identical CSVs.
 
 ### Which cruise these logs are
 
-`SHARP_CRUISE` picks the input directory, so asking for one cruise while reading
-another's logs is not something that happens by accident. What the notebook still
+The `cruise` parameter picks the input directory, so asking for one cruise while
+reading another's logs is not something that happens by accident. What the notebook still
 checks for is misfiling — another cruise's logs sitting in this cruise's
 directory. The ship names every file for the cruise it recorded
 (`HS2606EM_gps01-2026-07-09`), so the notebook takes that number back out of the
@@ -135,9 +135,9 @@ processing HRS2601; if you see it for any other cruise, check the directory.
 PAR sits out of this check: Biospherical's logger names its files for the date
 only (`BSI20260423_145702.csv`), so there is no cruise number in them to check.
 
-If you override `SHARP_RAW_ROOT`, it points somewhere outside `input/<cruise>/`
-and the directory no longer implies the cruise — so set `SHARP_CRUISE` to match
-what you are pointing at.
+If you override `raw_root`, it points somewhere outside `input/<cruise>/` and the
+directory no longer implies the cruise — so set `cruise` to match what you are
+pointing at.
 
 ## 5. What comes out
 
@@ -149,13 +149,13 @@ By default, one CSV in `output/` (the directory is created if it isn't there):
 | `<cruise>_underway_noPAR.csv` | The same 1-minute product without PAR — position, chl, turbidity, T/C/S, attitude, course, speed, and met (wind both relative and true). Always written; it is the deliverable until PAR arrives |
 | `<cruise>_par_1min.csv` | 1-minute PAR — `date` and `par_umol_m2_s`. Written when the PAR logs are present |
 
-The cruise prefix comes from `SHARP_CRUISE` (`hrs2606` if unset). `noPAR` means
+The cruise prefix comes from the `cruise` parameter (`hrs2606` by default). `noPAR` means
 the PAR channel is not included — it is logged separately and joined on last (see
 section 6 below). A knit run before the PAR logs arrive writes only the `noPAR`
 product; re-knitting once they have adds `<cruise>_underway.csv` and
 `<cruise>_par_1min.csv`.
 
-With `SHARP_INTERMEDIATES=1`, nine more files are written next to it. None of
+With the `intermediates` parameter on, nine more files are written next to it. None of
 them are published; they exist for QC, and so that the products which predate the
 met work stay reproducible (`noMet` means the meteorological channels are not
 joined on yet).
@@ -186,13 +186,13 @@ product first, a knit before those logs arrive still succeeds: it prints a messa
 that PAR is missing and writes `<cruise>_underway_noPAR.csv` only. Drop the
 `BSI*.csv` logs in and re-knit to add the PAR files below.
 
-| Variable | Default | What it does |
-|----------|---------|--------------|
-| `SHARP_PAR_ROOT` | `input/<cruise>/raw/par/raw` | Where the `BSI*.csv` logs are |
+| Parameter | Default | What it does |
+|-----------|---------|--------------|
+| `par_root` | blank → `input/<cruise>/raw/par/raw` | Where the `BSI*.csv` logs are; blank uses the default |
 
-`SHARP_CRUISE` and `SHARP_PLOTS` are the same variables the rest of the notebook
-uses — see the run table above. The PAR QC plots (including `par_diel`) are drawn
-with `SHARP_PLOTS=1` like every other plot.
+`cruise` and `plots` are the same parameters the rest of the notebook uses — see
+the run table above. The PAR QC plots (including `par_diel`) are drawn with
+`plots` on, like every other plot.
 
 | File | What |
 |------|------|
@@ -207,7 +207,7 @@ Notes:
 - **The logger clock is assumed to be UTC.** Nothing in the file says so. The
   HRS2601 logs confirm it: PAR peaks near 16:30–17:00 in logger time, which is
   solar noon in UTC at the shelf-break longitude, not the ~12:40 a logger on
-  local time would show. The `par_diel` QC plot (`SHARP_PLOTS=1`) is what
+  local time would show. The `par_diel` QC plot (with `plots` on) is what
   rechecks this for a new cruise — the daylight lobe should straddle the blue
   line.
 - **PAR does not cover the whole cruise.** The logger is started and stopped
@@ -296,7 +296,7 @@ Things worth knowing before you use these columns:
   anemometer's zero line points relative to the bow. We assume it *is* the bow
   (`zlr = 0`), which is the normal meaning of the `R` reference field in `$WIMW`,
   but **this has not been confirmed with the R/V Sharp.** If the ship reports an
-  offset, set `SHARP_ZLR` to it and re-run. Be aware that a wrong `zlr` rotates
+  offset, set the `zlr` parameter to it and re-run. Be aware that a wrong `zlr` rotates
   every true wind direction by exactly that many degrees while barely touching the
   speeds, so it does not announce itself in the output.
 - **North is 360, not 0.** When the wind is blowing from due north the direction
