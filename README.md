@@ -276,14 +276,15 @@ A ship steaming at 10 knots feels a 10-knot headwind that isn't there. True wind
 is what an observer standing still would have measured: the apparent wind vector
 with the ship's own velocity vector subtracted back out.
 
-The arithmetic is not ours. `R/tw.R` is the COAPS/FSU SAMOS `truewind` algorithm
+`R/tw.R` is the COAPS/FSU SAMOS `truewind` algorithm
 (Shawn R. Smith and Mark A. Bourassa, `samos@coaps.fsu.edu`), the standard
-implementation for this correction, vendored into this repository unmodified and
-under its own copyright and license. The notebook calls its `truew()` once per
-minute per sensor. The R file is a translation of the reference Python
-implementation; it was checked against that Python across 12,023 cases — random
-inputs, missing values, out-of-range values, calm, and the exact boundaries — and
-agrees to within floating-point noise (worst disagreement 3 × 10⁻¹³ degrees).
+implementation for this correction, vendored into this repository as an R
+translation of the reference Python implementation and under its own copyright
+and license — see `THIRD-PARTY-NOTICES.md`. The notebook calls its `truew()`
+once per minute per sensor. The translation was checked against that Python
+across 12,023 cases — random inputs, missing values, out-of-range values, calm,
+and the exact boundaries — and agrees to within floating-point noise (worst
+disagreement 3 × 10⁻¹³ degrees).
 
 Four inputs go in, all of them already in the product: `heading` (where the bow
 points, true north), `course_true_deg` (where the ship actually travels over the
