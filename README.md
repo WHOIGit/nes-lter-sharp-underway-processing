@@ -26,7 +26,7 @@ install.packages(c("here", "dplyr", "purrr", "ggplot2", "lubridate",
 
 ## 2. Open the project
 
-Open `sharp_underway_processing.Rproj` — **not** the `.Rmd` file on its own.
+Open `nes-lter-sharp-underway-processing.Rproj` — **not** the `.Rmd` file on its own.
 
 This matters. The `.Rproj` file is what the `here` package uses to find the
 project root, and every path in the notebook is built relative to that root.
