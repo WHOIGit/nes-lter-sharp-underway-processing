@@ -47,7 +47,7 @@ input/
 │       ├── sbe4501/raw/     # SBE45 thermosalinograph — temp, conductivity, salinity
 │       ├── pos/raw/         # POS MV — $PASHR attitude, $INVTG course + speed
 │       ├── rmyoung/raw/     # RM Young met — wind, air temp, humidity, pressure
-│       └── par/raw/         # Biospherical PAR — BSI*.csv (see "PAR" below)
+│       └── par/raw/         # PAR — *.csv, in either logger format (see "PAR" below)
 └── hrs2606/
     └── raw/
         └── ...
@@ -111,6 +111,7 @@ variables, no `.Renviron`, no restarting R.
 | `plots` | off | on draws the QC plots (33 of them, or 35 with an event log) into the knitted report |
 | `intermediates` | off | on writes the nine intermediate CSVs alongside the product |
 | `zlr` | `0` | Anemometer zero-line reference, in degrees — see "true wind" below |
+| `par_only` | off | on skips the ship's logs entirely and writes only `<cruise>_par_1min.csv` — for when PAR arrives before the rest of the cruise (see "PAR" below) |
 
 The QC plots are the bulk of the runtime — turning them on takes the run from
 about 30 seconds to about two minutes. Nothing written to `output/` depends on
@@ -132,8 +133,10 @@ never updated from. That is a mislabel rather than mixed data, so it warns and
 proceeds, treating `input/hrs2601/` as authoritative. Expect one warning when
 processing HRS2601; if you see it for any other cruise, check the directory.
 
-PAR sits out of this check: Biospherical's logger names its files for the date
-only (`BSI20260423_145702.csv`), so there is no cruise number in them to check.
+PAR sits out of this check: its loggers name their files for the date and time
+only (`BSI20260423_145702.csv`, `000000_150826.csv`), so there is no cruise number
+in them to check. With `par_only` on there are no ship logs in the run at all, so
+the whole check is skipped.
 
 If you override `raw_root`, it points somewhere outside `input/<cruise>/` and the
 directory no longer implies the cruise — so set `cruise` to match what you are
@@ -153,7 +156,8 @@ The cruise prefix comes from the `cruise` parameter (`hrs2606` by default). `noP
 the PAR channel is not included — it is logged separately and joined on last (see
 section 6 below). A knit run before the PAR logs arrive writes only the `noPAR`
 product; re-knitting once they have adds `<cruise>_underway.csv` and
-`<cruise>_par_1min.csv`.
+`<cruise>_par_1min.csv`. A run with `par_only` on is the other way round: no
+underway spine is built, so `<cruise>_par_1min.csv` is the only file written.
 
 With the `intermediates` parameter on, nine more files are written next to it. None of
 them are published; they exist for QC, and so that the products which predate the
@@ -174,25 +178,73 @@ joined on yet).
 
 ## 6. PAR
 
-PAR is logged by Biospherical's LoggerLight software rather than by the ship's
-underway system, so it arrives separately, in its own format, and usually after
-the rest of the cruise has already been processed. The `PAR` section of the
-notebook reads it, averages it onto the same 1-minute grid as the other channels,
-and joins it onto the underway spine — no separate step to run.
+PAR is logged by its own instrument rather than by the ship's underway system, so
+it arrives separately, in its own format, and on its own schedule. The `PAR`
+section of the notebook reads it, averages it onto the same 1-minute grid as the
+other channels, and joins it onto the underway spine — no separate step to run.
 
 Its logs are filed as one more instrument under the cruise:
-`input/<cruise>/raw/par/raw/BSI*.csv`. Because the notebook produces its `noPAR`
-product first, a knit before those logs arrive still succeeds: it prints a message
-that PAR is missing and writes `<cruise>_underway_noPAR.csv` only. Drop the
-`BSI*.csv` logs in and re-knit to add the PAR files below.
+`input/<cruise>/raw/par/raw/`. **Every `.csv` in that directory is read as a PAR
+log**, and the notebook works out which format each one is in from its contents —
+so a stray CSV filed there stops the run naming the file rather than being
+mis-parsed.
+
+Either arrival order works:
+
+- **PAR last** (the usual case). The notebook writes its `noPAR` product first, so
+  a knit before the PAR logs arrive still succeeds: it says PAR is missing and
+  writes `<cruise>_underway_noPAR.csv` only. Drop the logs in and re-knit to add
+  the PAR files below.
+- **PAR first** (HRS2609). Knit with `par_only` on. The ship's sections are
+  skipped, `<cruise>_par_1min.csv` is written on its own, and the notebook says
+  which product is still waiting on the ship's logs. Re-knit with `par_only` off
+  once they land.
 
 | Parameter | Default | What it does |
 |-----------|---------|--------------|
-| `par_root` | blank → `input/<cruise>/raw/par/raw` | Where the `BSI*.csv` logs are; blank uses the default |
+| `par_root` | blank → `input/<cruise>/raw/par/raw` | Where the PAR logs are; blank uses the default |
+| `par_only` | off | on skips the ship's logs and writes only `<cruise>_par_1min.csv` |
 
 `cruise` and `plots` are the same parameters the rest of the notebook uses — see
 the run table above. The PAR QC plots (including `par_diel`) are drawn with
 `plots` on, like every other plot.
+
+### The two log formats
+
+Both are the same probe (`QSR - S/N 10367` on every cruise so far); the difference
+is what is logging it.
+
+**Biospherical LoggerLight** — HRS2601, HRS2606. An 8-line metadata preamble, a
+`Time,` column header, then 5-second samples with per-interval statistics:
+
+```
+LoggerLight version 1.3.1, 4/23/2026 14:57:02, interval  5sec, Warning: ...
+ScaleFactor,604.71,,,,,,
+Offset+FO,0.193502,,,,,,
+Units,Einsteins/m²/s,,,,,,
+Cal Date,1/1/2022,,,,,,
+Time,QSR - S/N 10367,Minimum,Maximum,StDev,Integral,#Averaged,
+4/23/2026 14:57:05,1.234567E-03,...
+```
+
+Named `BSI<date>_<time>.csv`. The header is found by looking for the `Time,` line
+rather than by skipping 8 lines, so a longer or shorter preamble still parses.
+LoggerLight also writes bare status messages into the data block (`All statistics
+reset.`, `Sampling resumed after manual pause`); those are dropped and counted.
+
+**QSR raw** — HRS2609. The probe logged with nothing in front of it: one quoted
+header line, then two whitespace-padded columns at ~4.5 Hz, one file per day
+(~387,000 rows, 21 MB). Named `HHMMSS_DDMMYY.csv` for the time and date the log
+was started. Two header variants, both of which HRS2609 shipped:
+
+```
+"3, SN:10367, 4"
+"QSR, SN:10367, microEinsteins/m2/s, dry calibration"
+```
+
+The `3` and the `4` are unidentified. Only the second variant says what the
+numbers are in. Neither carries a `ScaleFactor` or a `Cal Date`. The filename's
+date is checked against the dates the rows carry.
 
 | File | What |
 |------|------|
@@ -202,17 +254,40 @@ the run table above. The PAR QC plots (including `par_diel`) are drawn with
 Notes:
 
 - **Units.** The product is always µmol/m²/s, the conventional PAR unit, but the
-  logger's native unit varies by cruise: HRS2601 reports Einsteins/m²/s (mol
-  photons, ×10⁶ to µmol), HRS2606 reports µmol/m²/s directly (×1). The notebook
-  reads the file's own `Units` line and picks the multiplier from it; a cruise in
-  neither unit stops the run rather than guessing. `ScaleFactor` and `Offset+FO`
-  in the file header are provenance — LoggerLight has already applied them.
-- **The logger clock is assumed to be UTC.** Nothing in the file says so. The
-  HRS2601 logs confirm it: PAR peaks near 16:30–17:00 in logger time, which is
-  solar noon in UTC at the shelf-break longitude, not the ~12:40 a logger on
-  local time would show. The `par_diel` QC plot (with `plots` on) is what
-  rechecks this for a new cruise — the daylight lobe should straddle the blue
-  line.
+  native unit varies by log, not by cruise: HRS2601 reports Einsteins/m²/s (mol
+  photons, ×10⁶ to µmol), HRS2606 reports µmol/m²/s directly (×1), and HRS2609's
+  one declared log reports microEinsteins/m²/s, which is the same as µmol/m²/s (an
+  Einstein is a mole of photons) and so also ×1. The multiplier is resolved per
+  file from that log's own units, so a cruise mixing formats converts correctly; a
+  unit the notebook does not recognise stops the run rather than being guessed at.
+  `ScaleFactor` and `Offset+FO` in a LoggerLight header are provenance —
+  LoggerLight has already applied them.
+- **A QSR raw log that declares no units is assumed to be µmol/m²/s.** This is the
+  one place the notebook assumes rather than reads, and it is worth knowing about.
+  Three things support it, none of them the file: HRS2609's one log that *does*
+  declare units says microEinsteins/m²/s and its readings are the same magnitude
+  as the ones that declare nothing (they run continuously into each other across
+  the midnight file boundary); the format's minimum on HRS2609 is −0.1848, and the
+  same probe's LoggerLight header reports `Offset+FO,0.193502`, which is what a
+  probe in the dark should read as a negative; and the daytime peak (3015) is the
+  same magnitude as HRS2606's. If an undeclared log ever turns out to be in whole
+  Einsteins it would read about 10⁻⁶ of what it should, and `par_diel` would be a
+  flat line on zero.
+- **The logger clock is assumed to be UTC.** Nothing in either format says so. The
+  diel cycle confirms it on every cruise so far: PAR peaks between about 15:00 and
+  18:00 in logger time, which straddles solar noon in UTC at the shelf-break
+  longitude (~16:40), not the ~12:40 a logger on local time would show. The
+  `par_diel` QC plot (with `plots` on) is what rechecks this for a new cruise —
+  the daylight lobe should straddle the blue line.
+- **A blank time means midnight.** Both loggers render 00:00:00 as an empty time
+  and write the row as a bare date (`4/24/2026,1.147225E-06`). Those rows are read
+  as midnight, and the notebook checks each one against the rows on either side: a
+  genuine midnight row sits next to a time just before or just after midnight, and
+  anything else stops the run. HRS2609's `112410_140826.csv` is what rules out the
+  alternative reading — it starts at 11:24:10 AM and prints that time in full, so
+  a blank is midnight rather than "whenever the log started".
+- **Timestamps that do not parse stop the run.** They are not dropped. See the
+  correction note below for why that matters.
 - **PAR does not cover the whole cruise.** The logger is started and stopped
   independently of the underway system, so minutes with no PAR are normal and
   reach the product as `NA`. On HRS2601 the logger started about 27 hours into

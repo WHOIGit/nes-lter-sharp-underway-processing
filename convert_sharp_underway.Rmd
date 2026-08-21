@@ -20,6 +20,9 @@ params:
   par_root:
     label: "PAR log directory (blank = input/<cruise>/raw/par/raw)"
     value: ""
+  par_only:
+    label: "PAR only: skip the ship's logs and write just <cruise>_par_1min.csv"
+    value: false
 ---
 
 # load required packages
@@ -56,7 +59,7 @@ source(here("R", "tw.R"))
 # found" -- fall back to the same defaults here so that keeps working.
 if (!exists("params")) {
   params <- list(cruise = "hrs2606", plots = FALSE, intermediates = FALSE,
-                 zlr = 0, raw_root = "", par_root = "")
+                 zlr = 0, raw_root = "", par_root = "", par_only = FALSE)
 }
 
 # Cruise the raw logs belong to. Prefixes every file written to output/, and
@@ -104,10 +107,18 @@ zlr <- as.numeric(params$zlr)
 # to a cruise's raw/ kept outside the project.
 raw_root <- if (nzchar(params$raw_root)) params$raw_root else here("input", cruise, "raw")
 
-if (!dir.exists(raw_root)) {
+# PAR is logged by its own instrument and arrives on its own schedule, sometimes
+# well before the ship's underway logs do (hrs2609 delivered PAR first). With
+# `par_only` set, the ship's sections below do not run at all and the notebook
+# writes only <cruise>_par_1min.csv: there is no position spine to join PAR onto,
+# so no <cruise>_underway.csv is possible yet. Re-knit with it clear once the
+# ship's logs land. This is what the retired process_par.R used to be for.
+par_only <- isTRUE(params$par_only)
+
+if (!par_only && !dir.exists(raw_root)) {
   stop("raw log directory not found: ", raw_root,
        "\nUnpack ", cruise, "'s raw logs there, or set the raw_root parameter ",
-       "to their location.")
+       "to their location. Set par_only to process PAR on its own.")
 }
 
 # `cruise` now picks the directory as well as labelling the output, so the two
@@ -123,33 +134,41 @@ if (!dir.exists(raw_root)) {
 # mislabel and warns; two different labels in one directory is genuinely mixed
 # data and stops.
 #
-# PAR is logged by Biospherical's software rather than the ship's, and its
-# filenames carry only a date (BSI20260423_145702.csv). There is nothing in them
-# to check a cruise against, so they sit out of this. See process_par.R.
-cruise_num <- str_extract(cruise, "\\d+")
-raw_files  <- basename(dir(raw_root, recursive = TRUE))
+# PAR is logged by its own instrument rather than the ship's, and its filenames
+# carry only a date and time (BSI20260423_145702.csv, 000000_150826.csv). There
+# is nothing in them to check a cruise against, so they sit out of this -- see
+# the PAR section at the end.
+#
+# There are no ship logs to check at all under par_only, so the whole check sits
+# out that run.
+if (!par_only) {
 
-if (length(raw_files) == 0) {
-  stop("no raw log files found under: ", raw_root)
-}
+  cruise_num <- str_extract(cruise, "\\d+")
+  raw_files  <- basename(dir(raw_root, recursive = TRUE))
 
-ship_num   <- str_match(raw_files, "^HS(\\d{4})")[, 2]
-ship_found <- unique(ship_num[!is.na(ship_num)])
+  if (length(raw_files) == 0) {
+    stop("no raw log files found under: ", raw_root)
+  }
 
-if (length(ship_found) > 1) {
-  stop("logs from more than one cruise are mixed together under ", raw_root,
-       ": the ship labelled some HS", paste(sort(ship_found), collapse = ", HS"),
-       ".\nEach input/<cruise>/ directory holds one cruise's logs.")
-}
-if (length(ship_found) == 0) {
-  warning("none of the ", length(raw_files), " files under ", raw_root,
-          " are ship logs named HS<cruise>_<instrument>-<date>, so there is ",
-          "nothing to check \"", cruise, "\" against. First: ", raw_files[1])
-} else if (ship_found != cruise_num) {
-  warning("cruise is \"", cruise, "\", but the ship labelled these logs HS",
-          ship_found, ". Taking input/", cruise, "/ as authoritative and ",
-          "proceeding -- this is expected for hrs2601, whose logs are all ",
-          "HS2501. Check the directory if it is not.")
+  ship_num   <- str_match(raw_files, "^HS(\\d{4})")[, 2]
+  ship_found <- unique(ship_num[!is.na(ship_num)])
+
+  if (length(ship_found) > 1) {
+    stop("logs from more than one cruise are mixed together under ", raw_root,
+         ": the ship labelled some HS", paste(sort(ship_found), collapse = ", HS"),
+         ".\nEach input/<cruise>/ directory holds one cruise's logs.")
+  }
+  if (length(ship_found) == 0) {
+    warning("none of the ", length(raw_files), " files under ", raw_root,
+            " are ship logs named HS<cruise>_<instrument>-<date>, so there is ",
+            "nothing to check \"", cruise, "\" against. First: ", raw_files[1])
+  } else if (ship_found != cruise_num) {
+    warning("cruise is \"", cruise, "\", but the ship labelled these logs HS",
+            ship_found, ". Taking input/", cruise, "/ as authoritative and ",
+            "proceeding -- this is expected for hrs2601, whose logs are all ",
+            "HS2501. Check the directory if it is not.")
+  }
+
 }
 
 # Products are written here; keep them out of the raw tree.
@@ -330,7 +349,7 @@ true_wind <- function(df, prefix, zlr_deg = zlr, wmis = DEFAULT_MISSING_VALUES) 
 
 # GPS
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 GGA_COLS <- c("datetime_type","GPSTime","Latitude","NorS","Longitude","EorW",
               "FixQuality","NumSats","HDOP","AntennaHeight","UnitsAntennaHeight",
@@ -391,7 +410,7 @@ if (!is.null(elog)) {
 
 ```
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 # reduce data set to 1-minute timestamps
 
 # Position is instantaneous, not averaged: take the first fix in each minute.
@@ -420,7 +439,7 @@ write_intermediate(gps01_1min, "gps_1minute")
 
 # Fluorometer
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 FLUOR_COLS <- c("datetime","time","ChlChannel","ChlCount","TurbChannel","TurbCount","Auxiliary")
 
@@ -469,7 +488,7 @@ qc(ggplot(underway, aes(x = datetime, y = turb_ntu))+geom_point())
 
 # Thermosalinograph
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 TSG_COLS <- c("datetime","cond","sal")
 
@@ -508,7 +527,7 @@ qc(ggplot(underway, aes(x = datetime, y = sal))+geom_point())
 
 ```
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 # format and write file
 
@@ -527,7 +546,7 @@ write_intermediate(
 
 ```
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 # Read the POS files once and pull out both sentence types of interest.
 
@@ -549,7 +568,7 @@ write_intermediate(vtg, "vtg")
 
 ```
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 # format pash
 
 pash <- pash |>
@@ -575,7 +594,7 @@ pash_1min <- pash_1min |> select(datetime, heading, heading_type, roll_deg, pitc
 
 ```
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 # join with other 1-min data
 
 # The published datetimeISO identifies the $INVTG sample, so it is picked up
@@ -589,7 +608,7 @@ write_intermediate(underway_p, "underway_noMet_noPAR_pash")
 
 ```
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 # format vtg
 
@@ -623,7 +642,7 @@ qc(ggplot(vtg, aes(x = datetime, y = speedKm))+geom_point()+geom_point(data = vt
 
 ```
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 # join with other 1-min data
 
@@ -665,7 +684,7 @@ write_intermediate(underway_v |> select(-datetime), "underway_noMet_noPAR")
 
 # Meteorology
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 # The RM Young logs three sentences, each at 1 Hz:
 #   $WIMW1,<dir>,R,<speed>,N,A   wind sensor 1 -- direction and speed
@@ -734,7 +753,7 @@ qc(ggplot(xdr, aes(x = datetime, y = barometric_pressure_hpa))+geom_point())
 
 ```
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 # calculate 1-minute average of wind, air temperature, humidity, pressure
 
@@ -768,7 +787,7 @@ qc(ggplot(met_1min, aes(x = datetime, y = air_temperature_degree_c))+geom_point(
 
 ```
 
-```{r}
+```{r, eval = !par_only, include = !par_only}
 
 # join with other 1-min data
 
@@ -861,28 +880,35 @@ write_csv(underway_m |> select(-datetime), product("underway_noPAR"))
 
 ```{r}
 
-# The PAR channel is logged by Biospherical's LoggerLight software rather than by
-# the ship's underway system, so it arrives separately and in its own format --
-# but it is filed as one more instrument under the cruise
-# (input/<cruise>/raw/par/raw/BSI*.csv), beside the ship's own logs. It is joined
-# onto the underway spine built above to produce the full <cruise>_underway.csv.
+# The PAR channel is logged by its own instrument rather than by the ship's
+# underway system, so it arrives separately and in its own format -- but it is
+# filed as one more instrument under the cruise (input/<cruise>/raw/par/raw/),
+# beside the ship's own logs. It is joined onto the underway spine built above to
+# produce the full <cruise>_underway.csv.
 #
-# PAR often arrives after the rest of the cruise has been processed. When its logs
-# are not there yet this section does nothing but say so: underway_noPAR.csv above
-# is the deliverable until PAR shows up, and re-knitting once it has adds
-# par_1min.csv and underway.csv.
+# PAR often arrives on a different schedule from the rest of the cruise. When its
+# logs are not there yet this section does nothing but say so: underway_noPAR.csv
+# above is the deliverable until PAR shows up, and re-knitting once it has adds
+# par_1min.csv and underway.csv. When PAR arrives *first* -- as it did for
+# hrs2609 -- knit with par_only set: the ship's sections above are skipped and
+# this one writes par_1min.csv on its own.
 
 # Leave `par_root` blank to use input/<cruise>/raw/par/raw, or set it in the
 # Knit-with-Parameters dialog (or the `params:` block) to point elsewhere.
 par_root <- if (nzchar(params$par_root)) params$par_root else here("input", cruise, "raw", "par", "raw")
 
 # PAR is filed as one more instrument under the cruise, beside gps01 and rmyoung,
-# even though Biospherical's logger wrote it rather than the ship's underway
-# system, so `cruise` picks these logs the same way it picks the notebook's. The
-# BSI filenames carry a date and no cruise number, so they sit out of the
-# HS<cruise> cross-check in the helpers section.
+# even though its own logger wrote it rather than the ship's underway system, so
+# `cruise` picks these logs the same way it picks the notebook's. The filenames
+# carry a date and no cruise number, so they sit out of the HS<cruise>
+# cross-check in the helpers section.
+#
+# Every .csv here is taken to be a PAR log. The two known formats are told apart
+# by their contents (read_par_file below), and anything that is neither stops the
+# run naming the file, so a wide glob cannot quietly mis-parse a stray CSV. It
+# also means a third format shows up as an error rather than as missing data.
 par_paths <- if (dir.exists(par_root)) {
-  dir(par_root, pattern = "^BSI.*\\.csv$", full.names = TRUE)
+  dir(par_root, pattern = "\\.csv$", full.names = TRUE)
 } else {
   character()
 }
@@ -890,10 +916,149 @@ par_paths <- if (dir.exists(par_root)) {
 have_par <- length(par_paths) > 0
 
 if (!have_par) {
-  message("no BSI*.csv PAR logs under ", par_root,
+  message("no PAR logs (*.csv) under ", par_root,
           " -- has ", cruise, "'s PAR data arrived yet? ",
-          "Skipping PAR; ", basename(product("underway_noPAR")),
-          " is the product until it has.")
+          if (par_only) {
+            "par_only is set, so there is nothing left to do this run."
+          } else {
+            paste0("Skipping PAR; ", basename(product("underway_noPAR")),
+                   " is the product until it has.")
+          })
+}
+
+# Both loggers write M/D/YYYY clock time with no zone, but not in one format:
+#
+#   4/23/2026 14:57:05      LoggerLight, hrs2601  -- 24-hour
+#   6/27/2026 3:35:24 PM    LoggerLight, hrs2606  -- 12-hour with a meridiem
+#   8/15/2026 3:35:24 PM    QSR raw,     hrs2609  -- 12-hour with a meridiem
+#   8/15/2026               QSR raw,     hrs2609  -- midnight, as a bare date
+#
+# Parsing all of these with one "%m/%d/%Y %H:%M:%S" is what produced the wrong
+# hrs2606 PAR that this replaces. strptime ignores trailing text it has no
+# directive for, so " PM" was dropped: every afternoon reading landed 12 hours
+# early, on top of that morning's reading, and the two were averaged together.
+# %H also cannot express hours 13-23, so half of every day collapsed onto the
+# other half -- 12,308 of hrs2606's 27,415 PAR minutes, with the published diel
+# cycle peaking at 05 UTC instead of 17.
+#
+# So dispatch on the shape of the string, and treat anything that still will not
+# parse as an error. The callers below stop() on a failed parse rather than
+# dropping the row, which is the part that matters: the old code filtered NA
+# datetimes out silently, which is why a whole cruise of 12-hour stamps went
+# through a knit without a word. It also means a platform whose strptime cannot
+# do %p fails loudly here instead of quietly halving a cruise.
+#
+# A bare date is midnight. Both loggers render 00:00:00 as an empty time, and
+# both drop a bare-date row wherever a log crosses midnight -- LoggerLight writes
+# one ("4/24/2026,1.147225E-06" in BSI20260423_214332.csv, the 00:00:00 crossing
+# of a log started at 21:43), and the QSR logger writes the whole first second of
+# a midnight-started file that way.
+#
+# It is midnight and not "the time the log started": hrs2609's 112410_140826.csv
+# starts at 11:24:10 AM and prints that time in full on every row, with no bare
+# dates at all. Reading a bare date as the file's start time would have put its
+# 1475 umol opening reading at 11:24 -- right by luck -- while putting
+# LoggerLight's midnight crossings twelve hours out.
+#
+# check_bare_dates() below is what rechecks that on a new cruise, because filling
+# a blank noon with midnight would move a full-sun reading into the dark and the
+# value alone would not look wrong.
+parse_par_time <- function(x) {
+  x   <- str_trim(x)
+  ap  <- str_detect(x, regex("\\s(AM|PM)$", ignore_case = TRUE))
+  hms <- str_detect(x, ":")
+
+  out <- as.POSIXct(rep(NA_real_, length(x)), tz = "GMT", origin = "1970-01-01")
+
+  i <- which(ap)
+  if (length(i)) {
+    out[i] <- as.POSIXct(x[i], tz = "GMT", format = "%m/%d/%Y %I:%M:%S %p")
+  }
+  i <- which(!ap & hms)
+  if (length(i)) {
+    out[i] <- as.POSIXct(x[i], tz = "GMT", format = "%m/%d/%Y %H:%M:%S")
+  }
+  i <- which(!ap & !hms)
+  if (length(i)) {
+    out[i] <- as.POSIXct(paste(x[i], "00:00:00"), tz = "GMT",
+                         format = "%m/%d/%Y %H:%M:%S")
+  }
+  out
+}
+
+# Bare-date rows are read as midnight (see parse_par_time). That is safe only
+# while a blank time really does mean 00:00:00, so check it against the rows on
+# either side rather than trusting it: a genuine midnight row sits next to a time
+# just before or just after midnight. A logger that started blanking noon instead
+# would put a bare-date row next to 12:00 and this would stop the run, rather than
+# quietly moving a full-sun reading into the dark.
+check_bare_dates <- function(time, datetime, path, tol_sec = 300) {
+  bare <- which(!str_detect(str_trim(time), ":"))
+  if (length(bare) == 0) return(invisible(NULL))
+
+  sod       <- as.numeric(datetime) %% 86400          # seconds since midnight
+  near_mid  <- !is.na(sod) & (sod <= tol_sec | sod >= 86400 - tol_sec)
+  neighbour <- setdiff(seq_along(time), bare)
+
+  for (i in bare) {
+    j <- neighbour[which.min(abs(neighbour - i))]
+    if (length(j) == 0) {
+      stop("every row in ", basename(path), " is a bare date, so there is ",
+           "nothing to check the midnight reading against.")
+    }
+    if (!near_mid[j]) {
+      stop("a bare date in ", basename(path), " (row ", i, ") is read as ",
+           "midnight, but its nearest timed row is \"", time[j], "\".",
+           "\nA blank time no longer means 00:00:00 in this log -- work out what ",
+           "it does mean before processing it.")
+    }
+  }
+  invisible(NULL)
+}
+
+# Shared by both readers: a timestamp that does not parse is a bug in this
+# notebook or a format change in the log, and either way it must not become a
+# missing minute in the product.
+stop_on_unparsed <- function(time, datetime, path) {
+  bad <- which(is.na(datetime) & !is.na(time) & str_trim(time) != "")
+  if (length(bad)) {
+    stop(length(bad), " PAR timestamps in ", basename(path),
+         " did not parse, the first \"", time[bad[1]], "\".",
+         "\nAdd its format to parse_par_time() -- do not let it through as NA.")
+  }
+  invisible(NULL)
+}
+
+# The product is always umol/m2/s; the loggers' native units are not. Resolve the
+# multiplier from the log's own Units line, per file, rather than requiring one
+# unit across a whole cruise -- the two formats describe their units differently
+# (and the QSR raw format does not describe them at all), so a cruise carrying
+# both would otherwise abort on a difference that does not matter. This is a unit
+# change, not a calculation. Refuse to guess at anything else.
+#
+# Match loosely: the superscript 2 does not survive every encoding, so match on
+# the unit's leading word. The micro sign arrives as U+00B5 (cp1252 0xB5) from
+# read_par_loggerlight()'s cp1252 read; also accept Greek mu, an ASCII "u", and
+# the spelled-out "micromol".
+#
+# The micro test has to run BEFORE the Einsteins test, not after. hrs2609's
+# 112410_140826.csv declares "microEinsteins/m2/s", which is umol/m2/s -- an
+# Einstein is a mole of photons, so a microEinstein is a umol of them. Testing
+# for "einstein" first matches that string too and would scale it by 1e6,
+# putting a 1475 umol reading in the product as 1.5 billion.
+par_scale_for <- function(units) {
+  if (is.na(units)) {
+    stop("no Units for this PAR log, and no assumption to fall back on")
+  } else if (str_detect(units, regex("(µ|μ|u|micro)\\s*(mol|einstein)",
+                                    ignore_case = TRUE))) {
+    1     # umol/m2/s, or microEinsteins/m2/s, which is the same thing
+  } else if (str_detect(units, regex("einstein", ignore_case = TRUE))) {
+    1e6   # Einsteins (= mol photons) to umol
+  } else {
+    stop("PAR Units line is neither Einsteins nor umol/m2/s: ", units,
+         "\nThe product is umol/m2/s; add the conversion for this unit before ",
+         "processing.")
+  }
 }
 
 # A LoggerLight file is a fixed 8-line header block, a column header, then 5-second
@@ -917,11 +1082,67 @@ if (!have_par) {
 # cruise still parses.
 PAR_HEADER_RE <- "^Time,"
 
-# The Units line carries bytes that are invalid UTF-8 in the logger's cp1252
-# output: a superscript 2 (m^2, 0xB2), and on umol cruises a micro sign (µmol,
-# 0xB5). Read as cp1252 so the line does not come back mangled or abort the read,
-# and so the unit-detection match below sees a real µ.
+# The QSR raw format is the same probe logged without LoggerLight in front of it:
+# one quoted header line carrying the serial number, then two whitespace-padded
+# columns of timestamp and reading, one file per day at ~4.5 Hz.
+#
+#   "3, SN:10367, 4"
+#   8/15/2026     ,              0.8797627
+#   8/15/2026 12:00:01 AM       ,              0.878777
+#
+# The header comes in at least two variants, and hrs2609 shipped both:
+#
+#   "3, SN:10367, 4"
+#   "QSR, SN:10367, microEinsteins/m2/s, dry calibration"
+#
+# The 3 and the 4 are unidentified. Only the second variant says what the numbers
+# are in, so the format is recognised on the one field both variants have -- the
+# serial -- and not on the shape of the rest. There is no ScaleFactor and no Cal
+# Date in either.
+PAR_QSR_RE <- "^\"?[^,]*,\\s*SN:\\s*\\d+"
+
+# When the header does not declare units, the readings are taken to be umol/m2/s
+# already, which is what the product wants. Three things say so, none of them the
+# file itself:
+#
+#  - The one hrs2609 header that DOES declare units says microEinsteins/m2/s,
+#    which is umol/m2/s, and its readings are the same magnitude as the files
+#    that declare nothing.
+#  - This format's minimum on hrs2609 is -0.193635, and the same probe's
+#    LoggerLight header on hrs2606 reports Offset+FO,0.193502 -- a probe in the
+#    dark reads minus its offset, and those agree to four figures.
+#  - The daytime peak (2427) is the same magnitude as hrs2606's correctly-parsed
+#    peak hour (2091).
+#
+# It is still an assumption, and it is flagged in the README. If an undeclared log
+# ever turns out to be in whole Einsteins it will read about 1e-6 of what it
+# should, and the par_diel QC plot will be a flat line on zero.
+PAR_QSR_UNITS <- "umol/m2/s (assumed: this log's header declares no units)"
+
+# Dispatch on the file's contents, not on the cruise: a cruise can change logger
+# without telling anyone, and the file itself is the only thing that knows which
+# format it is in.
 read_par_file <- function(path) {
+  head_lines <- read_lines(path, n_max = 20,
+                           locale = locale(encoding = "cp1252"), progress = FALSE)
+
+  if (any(str_detect(head_lines, PAR_HEADER_RE))) {
+    read_par_loggerlight(path)
+  } else if (length(head_lines) > 0 && str_detect(head_lines[1], PAR_QSR_RE)) {
+    read_par_qsr_raw(path)
+  } else {
+    stop("not a PAR log in either known format -- no \"Time,\" header line, and ",
+         "line 1 is not \"<n>, SN:<serial>, <n>\": ", basename(path),
+         "\nEvery .csv under ", par_root, " is read as PAR; move this one out, ",
+         "or add its format here.")
+  }
+}
+
+# The Units line carries bytes that are invalid UTF-8 in the logger's cp1252
+# output: a superscript 2 (m^2, 0xB2), and on umol cruises a micro sign (umol,
+# 0xB5). Read as cp1252 so the line does not come back mangled or abort the read,
+# and so the unit-detection match in par_scale_for() sees a real micro sign.
+read_par_loggerlight <- function(path) {
   lines <- read_lines(path, locale = locale(encoding = "cp1252"),
                       progress = FALSE)
 
@@ -958,15 +1179,99 @@ read_par_file <- function(path) {
   value <- suppressWarnings(as.numeric(m[, 2]))
   is_sample <- !is.na(value)
 
+  time  <- time[is_sample]
+  value <- value[is_sample]
+
+  datetime <- parse_par_time(time)
+  stop_on_unparsed(time, datetime, path)
+  check_bare_dates(time, datetime, path)
+
+  units     <- meta_value("Units")
+  # Resolve the multiplier out here: inside tibble() the `units` column has
+  # already been recycled to one value per sample, and par_scale_for() takes one
+  # units string.
+  par_scale <- par_scale_for(units)
+
   tibble(
-    file        = basename(path),
-    sensor      = sensor,
+    file         = basename(path),
+    sensor       = sensor,
     scale_factor = meta_value("ScaleFactor"),
-    units       = meta_value("Units"),
-    cal_date    = meta_value("Cal Date"),
-    n_messages  = sum(!is_sample),
-    time        = time[is_sample],
-    par_native  = value[is_sample]
+    units        = units,
+    cal_date     = meta_value("Cal Date"),
+    n_messages   = sum(!is_sample),
+    time         = time,
+    datetime     = datetime,
+    par_native   = value,
+    par_scale    = par_scale
+  )
+}
+
+read_par_qsr_raw <- function(path) {
+  hdr <- read_lines(path, n_max = 1, progress = FALSE)
+  sn  <- str_match(hdr, "SN:\\s*(\\d+)")[, 2]
+  if (is.na(sn)) {
+    stop("no \"SN:<serial>\" in the header line of: ", basename(path))
+  }
+
+  # The filename is HHMMSS_DDMMYY -- the time and date the log was started. It is
+  # not what times the rows (they carry their own), but it is a free check that
+  # this file is the day it claims to be, which is the one thing a wide *.csv
+  # glob cannot verify for itself.
+  stamp <- str_match(basename(path),
+                     "^(\\d{2})(\\d{2})(\\d{2})_(\\d{2})(\\d{2})(\\d{2})\\.csv$")
+  if (anyNA(stamp)) {
+    stop("QSR raw filename is not HHMMSS_DDMMYY.csv: ", basename(path))
+  }
+  file_date <- as.Date(paste(stamp[5], stamp[6], stamp[7], sep = "-"),
+                       format = "%d-%m-%y")
+
+  # Two fixed fields, unlike the NMEA streams, so this goes through read_csv()
+  # rather than the read_lines() + str_split_fixed() idiom in the helpers: at
+  # ~387,000 rows a day the character matrix that split builds would run to
+  # several GB over a cruise. trim_ws handles the padding.
+  # Take the units from the header when it carries them, and fall back on the
+  # assumption above when it does not (see PAR_QSR_UNITS). Either way the
+  # multiplier comes out of par_scale_for(), so a file that declares Einsteins
+  # would be converted rather than mis-scaled.
+  hdr_fields <- str_trim(str_split_fixed(str_remove_all(hdr, "\""),
+                                        stringr::fixed(","), 10))
+  unit_field <- str_subset(hdr_fields, regex("(mol|einstein)", ignore_case = TRUE))
+  units      <- if (length(unit_field) > 0) unit_field[1] else PAR_QSR_UNITS
+  par_scale  <- par_scale_for(units)   # resolved out here, as above
+
+  d <- read_csv(path, skip = 1, col_names = c("time", "par_native"),
+                col_types = "cd", trim_ws = TRUE, progress = FALSE)
+
+  n_bad_value <- sum(is.na(d$par_native))
+  if (n_bad_value > 0) {
+    stop(n_bad_value, " non-numeric readings in ", basename(path),
+         " -- this format carries no status messages, so a reading that is not a ",
+         "number is unexplained.")
+  }
+
+  datetime <- parse_par_time(d$time)
+  stop_on_unparsed(d$time, datetime, path)
+  check_bare_dates(d$time, datetime, path)
+
+  seen <- unique(as.Date(datetime))
+  if (!file_date %in% seen) {
+    stop("QSR raw filename ", basename(path), " says ", format(file_date),
+         " but its rows are dated ", paste(format(seen), collapse = ", "), ".",
+         "\nOne of the two is wrong; both are used to tell the cruise's days ",
+         "apart.")
+  }
+
+  tibble(
+    file         = basename(path),
+    sensor       = paste0("QSR - S/N ", sn),
+    scale_factor = NA_character_,
+    units        = units,
+    cal_date     = NA_character_,
+    n_messages   = 0L,
+    time         = d$time,
+    datetime     = datetime,
+    par_native   = d$par_native,
+    par_scale    = par_scale
   )
 }
 
@@ -982,7 +1287,8 @@ if (have_par) {
 
   # One probe per cruise. Two would mean logs from different deployments (or
   # different cruises) mixed together in par_root, and averaging across them would
-  # be meaningless.
+  # be meaningless. Both readers spell the probe the same way ("QSR - S/N 10367"),
+  # so this holds across a cruise that changed logger mid-way.
   sensors <- unique(par_raw$sensor)
   if (length(sensors) > 1) {
     stop("more than one PAR probe among the logs under ", par_root, ": ",
@@ -992,70 +1298,63 @@ if (have_par) {
 
   # Calibration and scaling are what turn the counts into the published number, so
   # a change in either mid-cruise silently changes the units of half the product.
-  if (length(unique(par_raw$scale_factor)) > 1) {
+  # The QSR raw format reports neither, so drop NAs before comparing -- a format
+  # that carries no metadata is not a disagreement.
+  scale_factors <- unique(na.omit(par_raw$scale_factor))
+  cal_dates     <- unique(na.omit(par_raw$cal_date))
+  if (length(scale_factors) > 1) {
     warning("ScaleFactor is not the same in every log: ",
-            paste(unique(par_raw$scale_factor), collapse = ", "))
+            paste(scale_factors, collapse = ", "))
   }
-  if (length(unique(par_raw$cal_date)) > 1) {
+  if (length(cal_dates) > 1) {
     warning("Cal Date is not the same in every log: ",
-            paste(unique(par_raw$cal_date), collapse = ", "))
+            paste(cal_dates, collapse = ", "))
   }
 
-  # The product is always umol/m2/s, but the logger's native unit is not the same
-  # across cruises: HRS2601 reports Einsteins/m2/s (mol photons), HRS2606 reports
-  # umol/m2/s directly. Pick the multiplier from the logger's own Units line --
-  # this is a unit change, not a calculation. Refuse to guess if it is neither.
-  # Match loosely: the superscript 2 does not survive every encoding, so match on
-  # the unit's leading word. The micro sign arrives as U+00B5 (cp1252 0xB5) from
-  # read_par_file()'s cp1252 read; also accept Greek mu, an ASCII "u", and the
-  # spelled-out "micromol".
+  # par_scale came out of each log's own Units line (par_scale_for above), so a
+  # cruise carrying both formats converts correctly without them having to agree
+  # on how they spell the unit. Two different units across one cruise is still
+  # worth saying out loud.
   units_native <- unique(par_raw$units)
   if (length(units_native) > 1) {
-    stop("PAR logs do not all report the same Units: ",
-         paste(units_native, collapse = ", "),
-         "\nSeparate the deployments and run them one at a time.")
-  }
-  if (str_detect(units_native, regex("einstein", ignore_case = TRUE))) {
-    par_scale <- 1e6   # Einsteins (= mol photons) to umol
-  } else if (str_detect(units_native, regex("(µ|μ|u|micro)mol", ignore_case = TRUE))) {
-    par_scale <- 1     # logger already emits umol/m2/s
-  } else {
-    stop("PAR Units line is neither Einsteins nor umol/m2/s: ", units_native,
-         "\nThe product is umol/m2/s; add the conversion for this unit before ",
-         "processing.")
+    warning("PAR logs do not all report the same Units: ",
+            paste(units_native, collapse = ", "),
+            " -- each is converted to umol/m2/s on its own multiplier.")
   }
 
   message(length(par_paths), " PAR logs, probe ", sensors,
-          ", ScaleFactor ", unique(par_raw$scale_factor),
-          ", calibrated ", unique(par_raw$cal_date))
+          ", units ", paste(units_native, collapse = " / "),
+          if (length(scale_factors)) paste0(", ScaleFactor ",
+                                            paste(scale_factors, collapse = ", ")) else "",
+          if (length(cal_dates)) paste0(", calibrated ",
+                                        paste(cal_dates, collapse = ", ")) else "")
   # n_messages is a per-file count carried on every one of that file's rows, so it
   # has to be de-duplicated before it is summed.
   n_dropped <- par_raw |> distinct(file, n_messages) |> pull(n_messages) |> sum()
   message(n_dropped, " logger status messages dropped; ",
           nrow(par_raw), " samples read")
 
-  # LoggerLight timestamps are M/D/YYYY H:M:S with no zero padding and no zone.
-  #
-  # The zone is the load-bearing assumption: nothing in the file says UTC, and a
-  # logger left on ship-local time would put every reading four hours off the
-  # underway spine -- an error that would survive the join looking perfectly
-  # plausible. The diel cycle in the HRS2601 logs confirms UTC: PAR peaks near
+  # The zone is the load-bearing assumption: nothing in either format says UTC,
+  # and a logger left on ship-local time would put every reading four hours off
+  # the underway spine -- an error that would survive the join looking perfectly
+  # plausible. The diel cycle confirms UTC on every cruise so far: PAR peaks near
   # 16:30-17:00 in logger time, which is solar noon in UTC at the shelf-break
-  # longitude (12:00 + 70 deg / 15 = ~16:40), not the ~12:40 a logger on EDT would
-  # show. The par_diel QC plot below is what rechecks this for a new cruise.
+  # longitude (12:00 + 70 deg / 15 = ~16:40), not the ~12:40 a logger on EDT
+  # would show. The par_diel QC plot below is what rechecks this for a new cruise.
+  #
+  # Timestamps are parsed in the readers, which stop() on anything they cannot
+  # read, so there is nothing to filter out here.
   par_all <- par_raw |>
     mutate(
       datetimeISO = time,
-      datetime    = as.POSIXct(time, tz = "GMT", format = "%m/%d/%Y %H:%M:%S"),
-      # par_scale carries the logger's native unit to umol/m2/s (see above): 1e6
-      # for Einsteins, 1 for a logger already reporting umol.
+      # par_scale carries the logger's native unit to umol/m2/s: 1e6 for
+      # Einsteins, 1 for a logger already reporting umol.
       par_umol_m2_s = par_native * par_scale
     ) |>
-    filter(!is.na(datetime)) |>
     arrange(datetime) |>
     select(file, datetimeISO, datetime, par_native, par_umol_m2_s)
 
-  if (nrow(par_all) == 0) stop("no PAR samples parsed -- check the Time format")
+  if (nrow(par_all) == 0) stop("no PAR samples parsed")
 
   message("PAR spans ", format(min(par_all$datetime)), " to ",
           format(max(par_all$datetime)), " UTC")
@@ -1076,22 +1375,26 @@ if (have_par) {
   #
   # PAR is a continuous scalar, so it is averaged over the minute like chl,
   # turbidity and T/C/S above -- not subsampled with snap_to_minute() like the
-  # instantaneous channels (position, attitude, course). The logger's 5-second
-  # cadence is not phase-locked to the minute and re-phases after every "All
-  # statistics reset", so averaging (rather than an exact-timestamp match) uses all
-  # ~12 samples in the minute and fills every minute the logger was running.
+  # instantaneous channels (position, attitude, course). Neither logger's cadence
+  # is phase-locked to the minute -- LoggerLight re-phases after every "All
+  # statistics reset" -- so averaging (rather than an exact-timestamp match) uses
+  # every sample in the minute and fills every minute the logger was running.
   par_1min <- par_all |>
     group_by(datetime = floor_date(datetime, unit = "minutes")) |>
     summarize(par_umol_m2_s = mean(par_umol_m2_s),
               n_samples     = n(),
               .groups = "drop")
 
-  # ~12 samples per minute at the 5-second logging interval. Short minutes bracket
-  # a logger restart and are expected; counted, not dropped, because a mean of even
-  # one sample is still that minute's PAR.
+  # Samples per minute is a property of the format, not a constant: ~12 at
+  # LoggerLight's 5-second interval, ~269 at the QSR logger's ~4.5 Hz. Judge short
+  # minutes against what this cruise actually delivered. They bracket a logger
+  # restart or a log boundary and are expected; counted, not dropped, because a
+  # mean of even one sample is still that minute's PAR.
+  n_typical <- median(par_1min$n_samples)
   qc(ggplot(par_1min, aes(x = n_samples))+geom_bar()+labs(x = "samples per minute"))
-  message(sum(par_1min$n_samples < 6), " of ", nrow(par_1min),
-          " minutes built from fewer than 6 samples (restarts and log boundaries)")
+  message(sum(par_1min$n_samples < n_typical / 2), " of ", nrow(par_1min),
+          " minutes built from fewer than half the typical ", n_typical,
+          " samples (restarts and log boundaries)")
 
   # The logger is stopped and restarted through the cruise, so the 1-minute series
   # has real holes. Report them rather than pad them: a minute with no PAR must
@@ -1112,12 +1415,29 @@ if (have_par) {
   write_csv(par_out, product("par_1min"))
   message("wrote ", product("par_1min"), " (", nrow(par_out), " minutes)")
 
-  # join PAR onto the underway spine
-  #
-  # A left_join onto the spine on the minute grid, exactly as the fluorometer and
-  # TSG are joined above. underway_m still carries `datetime` (its date and
-  # datetimeISO columns are already finished strings), so the join reformats
-  # nothing and drops the join key on the way out.
+}
+
+```
+
+```{r}
+
+# join PAR onto the underway spine
+#
+# A left_join onto the spine on the minute grid, exactly as the fluorometer and
+# TSG are joined above. underway_m still carries `datetime` (its date and
+# datetimeISO columns are already finished strings), so the join reformats
+# nothing and drops the join key on the way out.
+#
+# Under par_only there is no spine to join to -- the ship's sections above did
+# not run -- so par_1min.csv is where this run ends.
+if (have_par && !exists("underway_m")) {
+  message("no underway spine in this run, so no ", basename(product("underway")),
+          ": ", basename(product("par_1min")), " is the product. Re-knit with ",
+          "par_only clear once ", cruise, "'s ship logs are in ", raw_root, ".")
+}
+
+if (have_par && exists("underway_m")) {
+
   underway_par <- underway_m |>
     left_join(par_1min |> select(datetime, par_umol_m2_s), by = "datetime") |>
     select(-datetime)
